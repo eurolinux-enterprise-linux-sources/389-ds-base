@@ -22,9 +22,9 @@
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.2.11.15
-Release:          %{?relprefix}89%{?prerel}%{?dist}
+Release:          %{?relprefix}91%{?prerel}%{?dist}
 License:          GPLv2 with exceptions
-URL:              http://port389.org/
+URL:              http://www.port389.org/
 Group:            System Environment/Daemons
 BuildRoot:        %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 Requires:         %{name}-libs = %{version}-%{release}
@@ -535,6 +535,8 @@ Patch427:         0427-Ticket-49072-memberof-fixup-is-not-validating-base-d.patc
 Patch428:         0428-Ticket-47973-custom-schema-is-registered-in-small-ca.patch
 Patch429:         0429-Ticket-49104-dbscan-bin-crashing-due-to-a-segmentati.patch
 Patch430:         0430-Ticket-49121-ns-slapd-crashes-in-ldif_sput-due-to-th.patch
+Patch431:         0431-Ticket-47757-Unable-to-dereference-unqiemember-attri.patch
+Patch432:         0432-fix-for-cve-2017-2668-simple-return-text-if-suffix-n.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -1012,6 +1014,8 @@ cp %{SOURCE1} README.devel
 %patch428 -p1
 %patch429 -p1
 %patch430 -p1
+%patch431 -p1
+%patch432 -p1
 
 %build
 %if %{use_openldap}
@@ -1153,6 +1157,14 @@ fi
 %{_libdir}/%{pkgname}/libslapd.so.*
 
 %changelog
+* Mon Apr 3 2017 Mark Reynolds <mreynolds@redhat.com> - 1.2.1.11.15-91
+- Release 1.2.11.15-91
+- Resolves: bug 1437777 - EMBARGOED CVE-2017-2668 389-ds-base: Remote crash via crafted LDAP messages
+
+* Thu Mar 23 2017 Mark Reynolds <mreynolds@redhat.com> - 1.2.11.15-90
+- Release 1.2.11.15-90
+- Resovles: #1435365 - Unable to dereference unqiemember attribute because it is dn [#UID] not dn syntax 
+
 * Mon Feb 13 2017 Mark Reynolds <mreynolds@redhat.com> - 1.2.11.15-89
 - Release 1.2.11.15-89
 - Resolves: #1421512 - ns-slapd crashes in ldif_sput due to the output buf size is less than the real size.
