@@ -1,0 +1,56 @@
+From 57b750c54759c84bd7cece4b5450b501cc582f3d Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 12 May 2016 16:10:02 -0400
+Subject: [PATCH 424/425] Ticket 48220 - The "repl-monitor" web page does not
+ display "year" in date.
+
+Bug Description:  The year is not displayed in the header when the day
+                  is less than 10.  Appears to be an issue with localtime().
+
+Fix Description:  Instead of strftime for displaying the date.
+
+https://fedorahosted.org/389/ticket/48220
+
+Reviewed by: nhosoi(Thanks!)
+
+(cherry picked from commit 77e6044ee5e44fa86e44280d46f36d63a30458b0)
+(cherry picked from commit 436616e7f4dbd81598d98be8c51c0720922d49d0)
+---
+ ldap/admin/src/scripts/repl-monitor.pl.in | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/admin/src/scripts/repl-monitor.pl.in b/ldap/admin/src/scripts/repl-monitor.pl.in
+index 4cb0bef..847dada 100755
+--- a/ldap/admin/src/scripts/repl-monitor.pl.in
++++ b/ldap/admin/src/scripts/repl-monitor.pl.in
+@@ -192,6 +192,7 @@ use Mozilla::LDAP::Conn;	# LDAP module for Perl
+ use Mozilla::LDAP::Utils qw(normalizeDN);	# LULU, utilities.
+ use Mozilla::LDAP::API qw(:api :ssl :apiv3 :constant); # Direct access to C API
+ use Time::Local; # to convert GMT Z strings to localtime
++use POSIX;
+ 
+ #
+ # Global variables
+@@ -228,7 +229,7 @@ my %ld; # ldap connection hash
+ #
+ my ($opt_f, $opt_h, $opt_p, $opt_u, $opt_t, $opt_r, $opt_s);
+ my (@conns, @alias, @color);
+-my ($section, $interval, $nowraw, $now, $mm, $dd, $tt, $yy, $wday);
++my ($section, $interval, $now, $mm, $dd, $tt, $yy, $wday);
+ my ($fn, $rc, $prompt, $last_sidx);
+ my %passwords = ();
+ my $passwd = "";
+@@ -262,9 +263,7 @@ $prompt = "";
+ 	$interval = 300 if ( !$interval || $interval <= 0 );
+ 
+ 	# Get current date/time
+-	$nowraw = localtime();
+-	($wday, $mm, $dd, $tt, $yy) = split(/ /, $nowraw);
+-	$now = "$wday $mm $dd $yy $tt";
++	$now = strftime "%a %b %e %Y %H:%M:%S", localtime;
+ 
+ 	# if no -r (Reenter and skip html header), print html header
+ 	if (!$opt_r) {
+-- 
+2.9.3
+

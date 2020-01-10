@@ -1,0 +1,54 @@
+From 658d98102199cbed3102534626f4e92277e37b48 Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Thu, 19 Jan 2017 11:36:38 -0800
+Subject: [PATCH 428/429] Ticket 47973 - custom schema is registered in small
+ caps after schema reload
+
+Description: The fix for ticket 47973 [1] brought an side effect which
+lowers the case of the reloaded new schema.  This patch fixes the issue
+by eliminating normalize_oc_nolock().
+
+Note that the normalization is not needed since all the checks are done
+by strcasecmp.  There is an exception.  When trying to replace a schema
+with the same one having the different cases, exact string compare is
+called.
+
+[1] commit e0c78e1c1db351ea5cf835cdb55437b1ea26a3a6
+
+(cherry picked from commit bbd84b451fc015f28658ecbf8c186119cc2cea0d)
+(cherry picked from commit 90702d1d9955fccd341d40605ef87479986460c3)
+---
+ ldap/servers/slapd/schema.c | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/slapd/schema.c b/ldap/servers/slapd/schema.c
+index 798d905..1daf216 100644
+--- a/ldap/servers/slapd/schema.c
++++ b/ldap/servers/slapd/schema.c
+@@ -4129,11 +4129,19 @@ init_schema_dse_ext(char *schemadir, Slapi_Backend *be,
+ 
+ 	if (rc && !(schema_flags & DSE_SCHEMA_NO_BACKEND))
+ 	{
+-		/* make sure the schema is normalized */
+-		if (schema_flags & DSE_SCHEMA_LOCKED)
+-			normalize_oc_nolock();
+-		else
++		if (schema_flags & DSE_SCHEMA_LOCKED) {
++			/* 
++			 * Code path for schema reload.
++			 * To fix the side effect which lowers the case of the
++			 * reloaded new schema, eliminating normalize_oc_nolock().
++			 * Note that the normalization is not needed since all
++			 * the checks are done by strcasecmp.
++			 */
++			;
++		} else {
++			/* make sure the schema is normalized */
+ 			normalize_oc();
++		}
+ 
+ 		/* register callbacks */
+ 		dse_register_callback(*local_pschemadse, SLAPI_OPERATION_SEARCH,
+-- 
+2.9.3
+

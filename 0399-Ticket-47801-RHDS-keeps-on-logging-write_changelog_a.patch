@@ -1,0 +1,53 @@
+From fb5e419b287fa0a389d47813898b888715fa44a5 Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Wed, 4 Mar 2015 15:05:09 -0800
+Subject: [PATCH 399/404] Ticket #47801 - RHDS keeps on logging
+ write_changelog_and_ruv: failed to update RUV for unknown
+
+Description: When no operation is given to write_changelog_and_ruv
+(consumer has the chance just to update ruv) and opcsn is NULL,
+update_ruv_component immediately returns the default return value
+RUV_NOTFOUND, which should not be logged as SLAPI_LOG_FATAL but
+just ignored.
+
+https://fedorahosted.org/389/ticket/47801
+
+Reviewed by rmeggins@redhat.com (Thank you, Rich!!)
+
+(cherry picked from commit c170d9541cca17031e2663c24a1a1e97d8b3172a)
+(cherry picked from commit 1e38fbea783704d021950e03b57df0c54a1f7545)
+(cherry picked from commit 423c15c6ab074ee5497c58d8429c2f59395e2bc3)
+---
+ ldap/servers/plugins/replication/repl5_plugins.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/repl5_plugins.c b/ldap/servers/plugins/replication/repl5_plugins.c
+index 2a7abb1..9cd3845 100644
+--- a/ldap/servers/plugins/replication/repl5_plugins.c
++++ b/ldap/servers/plugins/replication/repl5_plugins.c
+@@ -1136,17 +1136,17 @@ write_changelog_and_ruv (Slapi_PBlock *pb)
+ 		opcsn = operation_get_csn(op);
+ 		rc = update_ruv_component(r, opcsn, pb);
+ 		if (RUV_COVERS_CSN == rc) {
+-        		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
++			slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
+ 					"write_changelog_and_ruv: RUV already covers csn for "
+ 					"%s (uniqid: %s, optype: %lu) csn %s\n",
+ 					dn, uniqueid, optype,
+ 					csn_as_string(oppcsn, PR_FALSE, csn_str));
+-		} else if (rc != RUV_SUCCESS) {
+-        		slapi_log_error(SLAPI_LOG_FATAL, repl_plugin_name,
++		} else if ((rc != RUV_SUCCESS) && (rc != RUV_NOTFOUND)) {
++			slapi_log_error(SLAPI_LOG_FATAL, repl_plugin_name,
+ 					"write_changelog_and_ruv: failed to update RUV for "
+-					"%s (uniqid: %s, optype: %lu) to changelog csn %s\n",
++					"%s (uniqid: %s, optype: %lu) to changelog csn %s - rc %d\n",
+ 					dn, uniqueid, optype,
+-					csn_as_string(oppcsn, PR_FALSE, csn_str));
++					csn_as_string(oppcsn, PR_FALSE, csn_str), rc);
+ 		}
+ 	}
+ 
+-- 
+2.4.11
+

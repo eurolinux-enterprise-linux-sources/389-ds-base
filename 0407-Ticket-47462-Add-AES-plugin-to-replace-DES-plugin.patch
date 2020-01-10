@@ -1,0 +1,26 @@
+From fdcb1d80335d016111ae62915db06885eae7ac23 Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Thu, 27 Oct 2016 12:31:38 -0700
+Subject: [PATCH 407/410] Ticket 47462 - Add AES plugin to replace DES plugin
+
+Description: Adding 52updateAESplugin.pl to update_DATA.
+(cherry picked from commit da94191704a97c64d44d37ccdd33d7d6109a5c71)
+---
+ Makefile.am | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Makefile.am b/Makefile.am
+index a808269..d018cb8 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -500,6 +500,7 @@ update_DATA = ldap/admin/src/scripts/exampleupdate.pl \
+ 	ldap/admin/src/scripts/50smd5pwdstorageplugin.ldif \
+ 	ldap/admin/src/scripts/50refintprecedence.ldif \
+ 	ldap/admin/src/scripts/50retroclprecedence.ldif \
++	ldap/admin/src/scripts/52updateAESplugin.pl \
+ 	ldap/admin/src/scripts/60upgradeschemafiles.pl \
+ 	ldap/admin/src/scripts/70upgradefromldif.pl \
+ 	ldap/admin/src/scripts/80upgradednformat.pl \
+-- 
+2.4.11
+

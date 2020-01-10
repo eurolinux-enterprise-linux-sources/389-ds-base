@@ -1,0 +1,46 @@
+From b3da135239f66128d43c4bec284936771a5cbdfe Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 19 Dec 2016 12:26:59 -0500
+Subject: [PATCH 417/425] Ticket 49071 - Import with duplicate DNs throws
+ unexpected errors
+
+Bug Description:  When an import fails there are unable to flush error
+                  messages.
+
+Fix Description:  When an import fails close the database files before
+                  deleting them.
+
+                  Also fixed a small issue in DSUtil where we did not properly
+                  check if an entry was valid.
+
+https://fedorahosted.org/389/ticket/49071
+
+Reviewed by: mreynolds(one line commit rule)
+
+(cherry picked from commit 64b1ebffe5af118965bcdf3a84d62c0fc3efd196)
+(cherry picked from commit d2f46f5af86faa9f50b85eea8dea2df563501f28)
+(cherry picked from commit 934c5608472788825289219f19380ed218f8c5a6)
+---
+ ldap/servers/slapd/back-ldbm/import.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/import.c b/ldap/servers/slapd/back-ldbm/import.c
+index 81c3c15..bf70cf3 100644
+--- a/ldap/servers/slapd/back-ldbm/import.c
++++ b/ldap/servers/slapd/back-ldbm/import.c
+@@ -1427,11 +1427,11 @@ error:
+         }
+     }
+     if (0 != ret) {
++    	dblayer_instance_close(job->inst->inst_be);
+         if (!(job->flags & FLAG_DRYRUN)) { /* If not dryrun */
+             /* if running in the dry run mode, don't touch the db */
+             dblayer_delete_instance_dir(be);
+         }
+-        dblayer_instance_close(job->inst->inst_be);
+     } else {
+         if (0 != (ret = dblayer_instance_close(job->inst->inst_be)) ) {
+             import_log_notice(job, "Failed to close database");
+-- 
+2.9.3
+

@@ -1,0 +1,98 @@
+From 35c77e7979317e46f41450838eea4c4c62efb5cc Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Wed, 19 Oct 2016 15:50:15 -0400
+Subject: [PATCH 408/410] Ticket 47703 - remove search limit for aci group
+ evaluation
+
+Bug Description:  Groups that have members that exceed the server sizelimit
+                  are not fully processed, and aci evalauation fails.
+
+Fix Description:  There should not be a sizelimit when processing aci's based
+                  on group membership.
+
+https://fedorahosted.org/389/ticket/47703
+
+Reviewed by: nhosoi(Thanks!)
+
+(cherry picked from commit 3151648f2c761efd8caab25cd09023947534a5da)
+(cherry picked from commit 99a34b4ef856af505df254a03e64d39d520c4ab1)
+(cherry picked from commit 3fd372ec7504b9078f6c6fedea67370969d69a66)
+---
+ ldap/servers/plugins/acl/acl.h     |  2 --
+ ldap/servers/plugins/acl/acl_ext.c | 10 ----------
+ ldap/servers/plugins/acl/acllas.c  | 11 -----------
+ 3 files changed, 23 deletions(-)
+
+diff --git a/ldap/servers/plugins/acl/acl.h b/ldap/servers/plugins/acl/acl.h
+index 8a9bec2..6930172 100644
+--- a/ldap/servers/plugins/acl/acl.h
++++ b/ldap/servers/plugins/acl/acl.h
+@@ -543,8 +543,6 @@ struct acl_pblock {
+ 	
+ 	/* Keep the Group nesting level */
+ 	int 					aclpb_max_nesting_level;
+-	int 					aclpb_max_member_sizelimit;
+-
+ 
+     /* To keep the results in the cache */
+ 
+diff --git a/ldap/servers/plugins/acl/acl_ext.c b/ldap/servers/plugins/acl/acl_ext.c
+index 014890c..94188c9 100644
+--- a/ldap/servers/plugins/acl/acl_ext.c
++++ b/ldap/servers/plugins/acl/acl_ext.c
+@@ -834,16 +834,6 @@ acl_init_aclpb ( Slapi_PBlock *pb , Acl_PBlock *aclpb, const char *ndn, int copy
+ 	aclg_init_userGroup ( aclpb, ndn, 0 /* get lock */ );
+ 
+ 	slapi_pblock_get( pb, SLAPI_BE_MAXNESTLEVEL, &aclpb->aclpb_max_nesting_level );
+-	slapi_pblock_get( pb, SLAPI_SEARCH_SIZELIMIT, &aclpb->aclpb_max_member_sizelimit );
+-	if ( aclpb->aclpb_max_member_sizelimit == 0 ) {
+-		aclpb->aclpb_max_member_sizelimit = SLAPD_DEFAULT_LOOKTHROUGHLIMIT;
+-	} else if ( aclpb->aclpb_max_member_sizelimit < -1 ) {
+-		/* handle the case of a negtive size limit either set or due
+-		 * to bug bz1065971. The member size limit should be dropped,
+-		 * but for backward compatibility to the best we can
+-		 */
+-		aclpb->aclpb_max_member_sizelimit = -1;
+-	}
+ 	slapi_pblock_get( pb, SLAPI_OPERATION_TYPE, &aclpb->aclpb_optype );
+ 
+ 	aclpb->aclpb_signature = acl_get_aclsignature();
+diff --git a/ldap/servers/plugins/acl/acllas.c b/ldap/servers/plugins/acl/acllas.c
+index 7f4f69c..a4c214b 100644
+--- a/ldap/servers/plugins/acl/acllas.c
++++ b/ldap/servers/plugins/acl/acllas.c
+@@ -1979,7 +1979,6 @@ acllas__user_ismember_of_group( struct acl_pblock *aclpb,
+ 	int			totalMembersVisited;
+ 	int			numOfMembers;
+ 	int			max_nestlevel;
+-	int			max_memberlimit;
+ 	aclUserGroup		*u_group;
+ 	struct member_info	*groupMember = NULL;
+ 	struct member_info 	*parentGroup = NULL;
+@@ -2064,7 +2063,6 @@ acllas__user_ismember_of_group( struct acl_pblock *aclpb,
+ 		info.clientCert = NULL;
+ 	info.aclpb = aclpb;
+ 
+-	max_memberlimit = aclpb->aclpb_max_member_sizelimit;
+ 	max_nestlevel = aclpb->aclpb_max_nesting_level;
+ 
+ #ifdef FOR_DEBUGGING
+@@ -2142,15 +2140,6 @@ eval_another_member:
+ 		goto free_and_return;
+ 	}
+ 
+-	/* limit of -1 means "no limit */
+-	if (info.c_idx > max_memberlimit && 
+-			max_memberlimit != -1 ) {
+-		slapi_log_error( SLAPI_LOG_ACL, plugin_name, 
+-			"GroupEval:Looked at too many entries:(%d, %d)\n",
+-				info.c_idx, info.lu_idx);
+-		result = ACL_DONT_KNOW; /* don't try to cache info based on this result */
+-		goto free_and_return;
+-	}
+ 	if (info.lu_idx > info.c_idx) {
+ 		if (numOfMembers == (info.lu_idx - info.c_idx)) {
+ 			/* That means it's not a GROUP. It is just another
+-- 
+2.4.11
+

@@ -1,0 +1,72 @@
+From c088ea0049412cfb216ddadb8f2ee7566fc9075c Mon Sep 17 00:00:00 2001
+From: Ludwig Krispenz <lkrispen@redhat.com>
+Date: Wed, 14 Sep 2016 11:39:33 +0200
+Subject: [PATCH] Ticket 48944 - backport 1.2.11 - on a read only replica
+ invalid state info can accumulate
+
+Bug Description: if internal mods are generated on a consumer (eg by Account Policy)
+		 and changes for these attributes are als received via replication
+		 the state information on the consumer can accumulate
+
+Fix Description: Make sure replace operations are only applied if they
+		 are newer than an existing attribute deletion csn.
+
+https://fedorahosted.org/389/ticket/48944
+
+Reviewed by: Noriko, thanks
+
+(cherry picked from commit 2e98b9ecd575d4cf531a92df3bbbe3e4f021b0ca)
+(cherry picked from commit 6751a36e8eb1936e3abd0a300fe68341f20bd8a6)
+---
+ ldap/servers/slapd/entrywsi.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/ldap/servers/slapd/entrywsi.c b/ldap/servers/slapd/entrywsi.c
+index 663d115..76286a1 100644
+--- a/ldap/servers/slapd/entrywsi.c
++++ b/ldap/servers/slapd/entrywsi.c
+@@ -430,6 +430,8 @@ entry_add_present_values_wsi(Slapi_Entry *e, const char *type, struct berval **b
+ 		Slapi_Attr *a= NULL;
+ 		long a_flags_orig;
+ 		int attr_state= entry_attr_find_wsi(e, type, &a);
++		const CSN *adcsn = NULL;
++
+ 		if (ATTRIBUTE_NOTFOUND == attr_state)
+ 		{
+ 			/* Create a new attribute */
+@@ -437,6 +439,17 @@ entry_add_present_values_wsi(Slapi_Entry *e, const char *type, struct berval **b
+ 			slapi_attr_init(a, type);
+ 			attrlist_add(&e->e_attrs, a);
+ 		}
++
++		adcsn = attr_get_deletion_csn(a);
++		if (csn_compare(csn, adcsn) < 0) {
++			/* the attribute was deleted with an adcsn
++			 * newer than the current csn.
++			 * Nothing to do.
++			 */
++			valuearray_free(&valuestoadd);
++			return retVal;
++		}
++
+ 		a_flags_orig = a->a_flags;
+ 		a->a_flags |= flags;
+ 		/* Check if the type of the to-be-added values has DN syntax or not. */
+@@ -544,6 +557,14 @@ entry_delete_present_values_wsi(Slapi_Entry *e, const char *type, struct berval
+ 		{
+ 			/* delete the entire attribute */
+ 			LDAPDebug( LDAP_DEBUG_ARGS, "removing entire attribute %s\n", type, 0, 0 );
++			const CSN *adcsn = attr_get_deletion_csn(a);
++			if (csn_compare(csn, adcsn) < 0) {
++				/* the attribute was deleted with an adcsn
++				 * newer than the current csn.
++				 * Nothing to do.
++				 */
++				return retVal;
++			}
+ 			attr_set_deletion_csn(a,csn);
+ 			if(urp)
+ 			{
+-- 
+2.4.11
+

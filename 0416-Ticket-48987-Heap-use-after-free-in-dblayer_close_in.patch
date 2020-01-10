@@ -1,0 +1,62 @@
+From aaae3f590d92cbdb301a82e248bda2248bc18bb6 Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Wed, 28 Sep 2016 15:28:28 -0700
+Subject: [PATCH 416/425] Ticket #48987 - Heap use after free in
+ dblayer_close_indexes
+
+Description: Once an attribute info is deleted, its backpointer
+dblayer_handle_ai_backpointer in the dblayer handle needs to be
+set to NULL not to access the address again. We also need to set
+this to null from within the dblayer_close_indexes because there
+is no guarantee on the order that we free the handle or the
+attrinfo.
+
+https://fedorahosted.org/389/ticket/48987
+
+Author: nhosoi, wibrown
+
+Review: nhosoi (Thanks!)
+(cherry picked from commit 99176404bfe76ee9fcf48b8b28750ec3979ec020)
+(cherry picked from commit f4b2a54d45606d61828d37b2a901f799a2de5f7b)
+---
+ ldap/servers/slapd/back-ldbm/dblayer.c   | 8 +++++++-
+ ldap/servers/slapd/back-ldbm/ldbm_attr.c | 4 ++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/dblayer.c b/ldap/servers/slapd/back-ldbm/dblayer.c
+index a08913b..fed5548 100644
+--- a/ldap/servers/slapd/back-ldbm/dblayer.c
++++ b/ldap/servers/slapd/back-ldbm/dblayer.c
+@@ -2635,7 +2635,13 @@ int dblayer_close_indexes(backend *be)
+         pDB = handle->dblayer_dbp;
+         return_value |= pDB->close(pDB,0);
+         next = handle->dblayer_handle_next;
+-        *((dblayer_handle **)handle->dblayer_handle_ai_backpointer) = NULL;
++        /* If the backpointer is still valid, NULL the attrinfos ref to us
++         * This is important as there is no ordering guarantee between if the
++         * handle or the attrinfo is freed first!
++         */
++        if (handle->dblayer_handle_ai_backpointer) {
++            *((dblayer_handle **)handle->dblayer_handle_ai_backpointer) = NULL;
++        }
+         slapi_ch_free((void**)&handle);
+     }
+ 
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_attr.c b/ldap/servers/slapd/back-ldbm/ldbm_attr.c
+index db087fe..862dcd1 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_attr.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_attr.c
+@@ -88,6 +88,10 @@ attrinfo_delete(struct attrinfo **pp)
+         slapi_ch_free((void**)&((*pp)->ai_attrcrypt));
+         attr_done(&((*pp)->ai_sattr));
+         attrinfo_delete_idlistinfo(&(*pp)->ai_idlistinfo);
++        if ((*pp)->ai_dblayer) {
++            /* attriinfo is deleted.  Cleaning up the backpointer at the same time. */
++            ((dblayer_handle *)((*pp)->ai_dblayer))->dblayer_handle_ai_backpointer = NULL;
++        }
+         slapi_ch_free((void**)pp);
+         *pp= NULL;
+     }
+-- 
+2.9.3
+

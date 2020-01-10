@@ -1,0 +1,153 @@
+From 0fff8ab61405b17463112e60f8a08ac39e5d563d Mon Sep 17 00:00:00 2001
+From: William Brown <firstyear@redhat.com>
+Date: Tue, 21 Jun 2016 11:11:52 +1000
+Subject: [PATCH 389/390] Ticket 48354 - Review of default ACI in the directory
+ server
+
+Bug Description:  By default we provide a default ACI that allows reading of the
+default ACI
+
+Fix Description:  Change the default, and add a test to detect regresion of this.
+
+https://fedorahosted.org/389/ticket/48354
+
+Author: wibrown
+
+Review by: nhosoi (Thanks!)
+
+(cherry picked from commit 3c2cd48b7d2cb0579f7de6d460bcd0c9bb1157bd)
+---
+ dirsrvtests/tests/tickets/ticket48354_test.py | 109 ++++++++++++++++++++++++++
+ ldap/ldif/template-baseacis.ldif.in           |   2 +-
+ 2 files changed, 110 insertions(+), 1 deletion(-)
+ create mode 100644 dirsrvtests/tests/tickets/ticket48354_test.py
+
+diff --git a/dirsrvtests/tests/tickets/ticket48354_test.py b/dirsrvtests/tests/tickets/ticket48354_test.py
+new file mode 100644
+index 0000000..53e1316
+--- /dev/null
++++ b/dirsrvtests/tests/tickets/ticket48354_test.py
+@@ -0,0 +1,109 @@
++import os
++import sys
++import time
++import ldap
++import logging
++import pytest
++from lib389 import DirSrv, Entry, tools, tasks
++from lib389.tools import DirSrvTools
++from lib389._constants import *
++from lib389.properties import *
++from lib389.tasks import *
++from lib389.utils import *
++
++DEBUGGING = False
++
++if DEBUGGING:
++    logging.getLogger(__name__).setLevel(logging.DEBUG)
++else:
++    logging.getLogger(__name__).setLevel(logging.INFO)
++
++
++log = logging.getLogger(__name__)
++
++
++class TopologyStandalone(object):
++    """The DS Topology Class"""
++    def __init__(self, standalone):
++        """Init"""
++        standalone.open()
++        self.standalone = standalone
++
++
++@pytest.fixture(scope="module")
++def topology(request):
++    """Create DS Deployment"""
++
++    # Creating standalone instance ...
++    if DEBUGGING:
++        standalone = DirSrv(verbose=True)
++    else:
++        standalone = DirSrv(verbose=False)
++    args_instance[SER_HOST] = HOST_STANDALONE
++    args_instance[SER_PORT] = PORT_STANDALONE
++    args_instance[SER_SERVERID_PROP] = SERVERID_STANDALONE
++    args_instance[SER_CREATION_SUFFIX] = DEFAULT_SUFFIX
++    args_standalone = args_instance.copy()
++    standalone.allocate(args_standalone)
++    instance_standalone = standalone.exists()
++    if instance_standalone:
++        standalone.delete()
++    standalone.create()
++    standalone.open()
++
++    def fin():
++        """If we are debugging just stop the instances, otherwise remove
++        them
++        """
++        if DEBUGGING:
++            standalone.stop(60)
++        else:
++            standalone.delete()
++
++    request.addfinalizer(fin)
++
++    # Clear out the tmp dir
++    standalone.clearTmpDir(__file__)
++
++    return TopologyStandalone(standalone)
++
++
++def _attr_present(conn, name):
++    results = conn.search_s(DEFAULT_SUFFIX, ldap.SCOPE_SUBTREE, '(%s=*)' % name, [name,])
++    if DEBUGGING:
++        print(results)
++    if len(results) > 0:
++        return True
++    return False
++
++def test_ticket48354(topology):
++    """
++    Test that we cannot view ACIs, userPassword, or certain other attributes as anonymous.
++    """
++
++    if DEBUGGING:
++        # Add debugging steps(if any)...
++        pass
++
++    # Do an anonymous bind
++    conn = ldap.initialize("ldap://%s:%s" % (HOST_STANDALONE, PORT_STANDALONE))
++    conn.simple_bind_s()
++
++    # Make sure that we cannot see:
++    # * userPassword
++    assert(not _attr_present(conn, 'userPassword'))
++    # * aci
++    assert(not _attr_present(conn, 'aci'))
++    # * anything else?
++
++    conn.unbind_s()
++
++    log.info('Test PASSED')
++
++
++if __name__ == '__main__':
++    # Run isolated
++    # -s for DEBUG mode
++    CURRENT_FILE = os.path.realpath(__file__)
++    pytest.main("-s %s" % CURRENT_FILE)
++
+diff --git a/ldap/ldif/template-baseacis.ldif.in b/ldap/ldif/template-baseacis.ldif.in
+index 089fb1f..4575921 100644
+--- a/ldap/ldif/template-baseacis.ldif.in
++++ b/ldap/ldif/template-baseacis.ldif.in
+@@ -1,5 +1,5 @@
+ dn: %ds_suffix%
+ changetype: modify
+ add: aci
+-aci: (targetattr!="userPassword")(version 3.0; acl "Enable anonymous access"; allow (read, search, compare) userdn="ldap:///anyone";)
++aci: (targetattr!="userPassword || aci")(version 3.0; acl "Enable anonymous access"; allow (read, search, compare) userdn="ldap:///anyone";)
+ aci: (targetattr="carLicense || description || displayName || facsimileTelephoneNumber || homePhone || homePostalAddress || initials || jpegPhoto || labeledURI || mail || mobile || pager || photo || postOfficeBox || postalAddress || postalCode || preferredDeliveryMethod || preferredLanguage || registeredAddress || roomNumber || secretary || seeAlso || st || street || telephoneNumber || telexNumber || title || userCertificate || userPassword || userSMIMECertificate || x500UniqueIdentifier")(version 3.0; acl "Enable self write for common attributes"; allow (write) userdn="ldap:///self";)
+-- 
+2.4.11
+

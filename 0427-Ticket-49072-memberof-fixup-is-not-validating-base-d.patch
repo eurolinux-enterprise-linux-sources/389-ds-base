@@ -1,0 +1,112 @@
+From 0baf2db04d66872e7dfa7e1c62432777d4ba48e8 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Fri, 13 Jan 2017 11:08:18 -0500
+Subject: [PATCH 427/427] Ticket 49072 - memberof fixup is not validating base
+ dn
+
+Description:  The basedn validation was not correctly backported to 1.2.11.
+              This patch adds the appropriate checks.
+
+https://fedorahosted.org/389/ticket/49072
+
+Reviewed by: nhosoi(Thanks!)
+
+(cherry picked from commit a87ddab64870a70b54eab8964ae1cdea9c5689b9)
+---
+ ldap/servers/plugins/memberof/memberof.c | 18 +++++++++++++++++-
+ ldap/servers/slapd/mapping_tree.c        | 20 ++++++++++++++++++++
+ ldap/servers/slapd/slapi-plugin.h        |  1 +
+ 3 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index 2cdaabb..aa54922 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -2282,10 +2282,11 @@ void memberof_fixup_task_thread(void *arg)
+ {
+ 	MemberOfConfig configCopy = {0, 0, 0, 0};
+ 	Slapi_Task *task = (Slapi_Task *)arg;
++	Slapi_DN *sdn;
++	Slapi_Backend *be;
+ 	task_data *td = NULL;
+ 	int rc = 0;
+ 
+-
+ 	if (!task) {
+ 		return; /* no task */
+ 	}
+@@ -2302,6 +2303,20 @@ void memberof_fixup_task_thread(void *arg)
+ 	slapi_log_error(SLAPI_LOG_FATAL, MEMBEROF_PLUGIN_SUBSYSTEM,
+ 	                "Memberof task starts (filter: \"%s\") ...\n", td->filter_str);
+ 
++	/* Validate the search base */
++	sdn = slapi_sdn_new_dn_byref(td->dn);
++	be = slapi_be_select_exact(sdn);
++	slapi_sdn_free(&sdn);
++	if (be == NULL) {
++		slapi_log_error(SLAPI_LOG_FATAL, MEMBEROF_PLUGIN_SUBSYSTEM,
++			"memberof_fixup_task_thread - Failed to get be backend from (%s)\n",
++			td->dn);
++		slapi_task_log_notice(task, "Memberof task - Failed to get be backend from (%s)\n",
++			td->dn);
++		rc = -1;
++		goto done;
++	}
++
+ 	/* We need to get the config lock first.  Trying to get the
+ 	 * config lock after we already hold the op lock can cause
+ 	 * a deadlock. */
+@@ -2324,6 +2339,7 @@ void memberof_fixup_task_thread(void *arg)
+ 
+ 	memberof_free_config(&configCopy);
+ 
++done:
+ 	slapi_task_log_notice(task, "Memberof task finished.");
+ 	slapi_task_log_status(task, "Memberof task finished.");
+ 	slapi_task_inc_progress(task);
+diff --git a/ldap/servers/slapd/mapping_tree.c b/ldap/servers/slapd/mapping_tree.c
+index 841ed32..f9dfcb9 100644
+--- a/ldap/servers/slapd/mapping_tree.c
++++ b/ldap/servers/slapd/mapping_tree.c
+@@ -3039,6 +3039,26 @@ slapi_be_select( const Slapi_DN *sdn ) /* JCM - The name of this should change??
+     return be;
+ }
+ 
++Slapi_Backend *
++slapi_be_select_exact(const Slapi_DN *sdn)
++{
++    Slapi_Backend *be = NULL;
++    mapping_tree_node *node = NULL;
++
++    if (!sdn) {
++        slapi_log_error(SLAPI_LOG_FATAL, "slapi_be_select_exact",
++                "Empty Slapi_DN is given.\n");
++        return NULL;
++    }
++    node = slapi_get_mapping_tree_node_by_dn(sdn);
++
++    if (node && node->mtn_be) {
++        be = node->mtn_be[0];
++    }
++
++    return be;
++}
++
+ /* Check if the dn targets an internal reserved backends */
+ int
+ slapi_on_internal_backends(const Slapi_DN *sdn)
+diff --git a/ldap/servers/slapd/slapi-plugin.h b/ldap/servers/slapd/slapi-plugin.h
+index c36822d..7f36173 100644
+--- a/ldap/servers/slapd/slapi-plugin.h
++++ b/ldap/servers/slapd/slapi-plugin.h
+@@ -6051,6 +6051,7 @@ Slapi_Backend *slapi_be_new( const char *type, const char *name,
+ 	int isprivate, int logchanges );
+ void slapi_be_free(Slapi_Backend **be);
+ Slapi_Backend *slapi_be_select( const Slapi_DN *sdn );
++Slapi_Backend *slapi_be_select_exact(const Slapi_DN *sdn);
+ Slapi_Backend *slapi_be_select_by_instance_name( const char *name );
+ int slapi_be_exist(const Slapi_DN *sdn);
+ void slapi_be_delete_onexit(Slapi_Backend *be);
+-- 
+2.9.3
+

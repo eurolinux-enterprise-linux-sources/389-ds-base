@@ -1,0 +1,84 @@
+From 5ab76899968135525ac36c182918554788330961 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 19 Dec 2016 10:30:40 -0500
+Subject: [PATCH 418/425] Ticket 49070 - ldif2db.pl/db2ldif.pl/db2index.pl
+ displays the wrong usage
+
+Bug Description:  The usage displays "-n instance", but this is misleading as
+                  it's supposed to be the backend name.
+
+Fix Description:  Change the usage to use "backend".
+
+https://fedorahosted.org/389/ticket/49070
+
+Reviewed by: nhosoi(Thanks!)
+
+(cherry picked from commit 7211e65825ae59c79ad5c7cf2d00c18314e900fd)
+---
+ ldap/admin/src/scripts/template-db2index.pl.in | 4 ++--
+ ldap/admin/src/scripts/template-db2ldif.pl.in  | 4 ++--
+ ldap/admin/src/scripts/template-ldif2db.pl.in  | 4 ++--
+ 3 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/ldap/admin/src/scripts/template-db2index.pl.in b/ldap/admin/src/scripts/template-db2index.pl.in
+index 2423d36..741726e 100644
+--- a/ldap/admin/src/scripts/template-db2index.pl.in
++++ b/ldap/admin/src/scripts/template-db2index.pl.in
+@@ -44,12 +44,12 @@ use DSUtil qw(shellEscape);
+ 
+ sub usage {
+     print(STDERR "Usage: $0 [-v] -D rootdn { -w password | -w - | -j filename } \n");
+-    print(STDERR "        -n instance [-t attributeName[:indextypes[:matchingrules]]]\n");
++    print(STDERR "        -n backend [-t attributeName[:indextypes[:matchingrules]]]\n");
+     print(STDERR " Opts: -D rootdn           - Directory Manager\n");
+     print(STDERR "     : -w password         - Directory Manager's password\n");
+     print(STDERR "     : -w -                - Prompt for Directory Manager's password\n");
+     print(STDERR "     : -j filename         - Read Directory Manager's password from file\n");
+-    print(STDERR "     : -n instance         - instance to be indexed\n");
++    print(STDERR "     : -n backend          - Backend database name to be indexed\n");
+     print(STDERR "     : -t attributeName[:indextypes[:matchingrules]]\n");
+     print(STDERR "                           - attributeName: name of the attribute to be indexed\n");
+     print(STDERR "                             If omitted, all the indexes defined \n");
+diff --git a/ldap/admin/src/scripts/template-db2ldif.pl.in b/ldap/admin/src/scripts/template-db2ldif.pl.in
+index d1b1f39..ee9a07f 100644
+--- a/ldap/admin/src/scripts/template-db2ldif.pl.in
++++ b/ldap/admin/src/scripts/template-db2ldif.pl.in
+@@ -44,13 +44,13 @@ use DSUtil qw(shellEscape);
+ 
+ sub usage {
+ 	print(STDERR "Usage: $0 [-v] -D rootdn { -w password | -w - | -j filename } \n");
+-	print(STDERR "        {-n instance}* | {-s include}* [{-x exclude}*] \n");
++	print(STDERR "        {-n backend}* | {-s include}* [{-x exclude}*] \n");
+ 	print(STDERR "        [-m] [-M] [-u] [-C] [-N] [-U] [-a filename]\n");
+ 	print(STDERR " Opts: -D rootdn   - Directory Manager\n");
+ 	print(STDERR "     : -w password - Directory Manager's password\n");
+ 	print(STDERR "     : -w -        - Prompt for Directory Manager's password\n");
+ 	print(STDERR "     : -j filename - Read Directory Manager's password from file\n");
+-	print(STDERR "     : -n instance - instance to be exported\n");
++	print(STDERR "     : -n backend  - Backend database name to be exported\n");
+ 	print(STDERR "     : -a filename - output ldif file\n");
+ 	print(STDERR "     : -s include  - included suffix(es)\n");
+ 	print(STDERR "     : -x exclude  - excluded suffix(es)\n");
+diff --git a/ldap/admin/src/scripts/template-ldif2db.pl.in b/ldap/admin/src/scripts/template-ldif2db.pl.in
+index 5fff029..0338acf 100644
+--- a/ldap/admin/src/scripts/template-ldif2db.pl.in
++++ b/ldap/admin/src/scripts/template-ldif2db.pl.in
+@@ -44,13 +44,13 @@ use DSUtil qw(shellEscape);
+ 
+ sub usage {
+ 	print(STDERR "Usage: $0 [-v] -D rootdn { -w password | -w - | -j filename } \n");
+-	print(STDERR "        -n instance | {-s include}* [{-x exclude}*] [-O] [-c]\n");
++	print(STDERR "        -n backend | {-s include}* [{-x exclude}*] [-O] [-c]\n");
+ 	print(STDERR "        [-g [string]] [-G namespace_id] {-i filename}*\n");
+ 	print(STDERR " Opts: -D rootdn     - Directory Manager\n");
+ 	print(STDERR "     : -w password   - Directory Manager's password\n");
+ 	print(STDERR "     : -w -          - Prompt for Directory Manager's password\n");
+ 	print(STDERR "     : -j filename   - Read Directory Manager's password from file\n");
+-	print(STDERR "     : -n instance   - instance to be imported to\n");
++	print(STDERR "     : -n backend    - Backend database name to be imported to\n");
+ 	print(STDERR "     : -i filename   - input ldif file(s)\n");
+ 	print(STDERR "     : -s include    - included suffix\n");
+ 	print(STDERR "     : -x exclude    - excluded suffix(es)\n");
+-- 
+2.9.3
+

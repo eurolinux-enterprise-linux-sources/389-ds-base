@@ -1,0 +1,33 @@
+From 87c8a71409c6d7056a6ed819963e45f623bae137 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Thu, 22 Dec 2016 13:43:28 -0500
+Subject: [PATCH 420/425] Ticket 49072 - fix log refactoring
+
+    Description:  change slapi_log_err() to slapi_log_error()
+
+    https://fedorahosted.org/389/ticket/49072
+
+    Reviewed by: mreynolds(one line commit rule)
+
+(cherry picked from commit ffaf3aa766beef6f02edfee9ad67585d2436b793)
+(cherry picked from commit d16e6a639dd21addef0eefb4e507dc842daf1424)
+---
+ ldap/servers/plugins/memberof/memberof.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ldap/servers/plugins/memberof/memberof.c b/ldap/servers/plugins/memberof/memberof.c
+index fd080da..9f750f1 100644
+--- a/ldap/servers/plugins/memberof/memberof.c
++++ b/ldap/servers/plugins/memberof/memberof.c
+@@ -2465,7 +2465,7 @@ int memberof_fix_memberof(MemberOfConfig *config, Slapi_Task *task, task_data *t
+ 
+ 		slapi_pblock_get(search_pb, SLAPI_PLUGIN_INTOP_RESULT, &result);
+ 		errmsg = ldap_err2string(result);
+-		slapi_log_err(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
++		slapi_log_error(SLAPI_LOG_ERR, MEMBEROF_PLUGIN_SUBSYSTEM,
+ 			"memberof_fix_memberof - Failed (%s)\n", errmsg );
+ 		slapi_task_log_notice(task, "Memberof task failed (%s)\n", errmsg );
+ 	}
+-- 
+2.9.3
+

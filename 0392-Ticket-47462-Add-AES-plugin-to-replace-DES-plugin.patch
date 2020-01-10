@@ -1,0 +1,2829 @@
+From 3c6d253521c6a64353136e74d72e5977d25fab1b Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Tue, 6 Sep 2016 16:05:49 -0400
+Subject: [PATCH 392/394] Ticket 47462 - Add AES plugin to replace DES plugin
+
+Description:  This patch is the cumulative patch of this tickets:
+
+Ticket 48862 - At startup DES to AES password conversion causes timeout in start script
+Ticket 48243 - replica upgrade failed in starting dirsrv service due to upgrade scripts did not run
+Ticket 47888 - DES to AES password conversion fails if a backend is empty
+Ticket 47462 - Stop using DES in the reversible password encryption plug-in
+
+              This patch is just for the backport to 1.2.11
+
+https://fedorahosted.org/389/attachment/ticket/47462
+
+Reviewed by: nhosoi(Thanks!)
+
+(cherry picked from commit ea241668ec7be475092a0da2a5d579e31ade1058)
+(cherry picked from commit f98228de6324ff6946e912b30ad18e03ec404a67)
+---
+ Makefile.am                                  |  12 +-
+ Makefile.in                                  | 108 ++---
+ ldap/admin/src/scripts/50AES-pbe-plugin.ldif |  16 +
+ ldap/admin/src/scripts/52updateAESplugin.pl  |  84 ++++
+ ldap/admin/src/scripts/DSCreate.pm.in        |   5 +-
+ ldap/admin/src/scripts/DSMigration.pm.in     |   2 +-
+ ldap/admin/src/scripts/DSUpdate.pm.in        |   2 +-
+ ldap/ldif/50replication-plugins.ldif         |   2 +-
+ ldap/ldif/template-dse.ldif.in               |  16 +-
+ ldap/servers/plugins/rever/des.c             | 551 ------------------------
+ ldap/servers/plugins/rever/pbe.c             | 621 +++++++++++++++++++++++++++
+ ldap/servers/plugins/rever/rever.c           | 116 +++--
+ ldap/servers/plugins/rever/rever.h           |  11 +-
+ ldap/servers/slapd/daemon.c                  | 155 ++++++-
+ ldap/servers/slapd/proto-slap.h              |   1 +
+ ldap/servers/slapd/pw.c                      |  86 ++--
+ ldap/servers/slapd/pw.h                      |  24 +-
+ ldap/servers/slapd/security_wrappers.c       |   6 +
+ ldap/servers/slapd/slap.h                    |  95 ++--
+ ldap/servers/slapd/slapi-plugin.h            |   2 +
+ ldap/servers/slapd/ssl.c                     |   4 +-
+ ldap/servers/slapd/task.c                    | 338 +++++++++++++++
+ 22 files changed, 1520 insertions(+), 737 deletions(-)
+ create mode 100644 ldap/admin/src/scripts/50AES-pbe-plugin.ldif
+ create mode 100644 ldap/admin/src/scripts/52updateAESplugin.pl
+ delete mode 100644 ldap/servers/plugins/rever/des.c
+ create mode 100644 ldap/servers/plugins/rever/pbe.c
+
+diff --git a/Makefile.am b/Makefile.am
+index 9ad2c3a..bc40ea7 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -205,7 +205,7 @@ endif
+ serverplugin_LTLIBRARIES = libacl-plugin.la libattr-unique-plugin.la \
+ 	libautomember-plugin.la libback-ldbm.la libchainingdb-plugin.la \
+ 	libcollation-plugin.la libcos-plugin.la libderef-plugin.la \
+-	libdes-plugin.la libdistrib-plugin.la libhttp-client-plugin.la \
++	libpbe-plugin.la libdistrib-plugin.la libhttp-client-plugin.la \
+ 	liblinkedattrs-plugin.la libmanagedentries-plugin.la \
+ 	libmemberof-plugin.la libpassthru-plugin.la libpwdstorage-plugin.la \
+ 	libreferint-plugin.la libreplication-plugin.la libretrocl-plugin.la \
+@@ -936,14 +936,14 @@ libderef_plugin_la_LIBADD = libslapd.la $(LDAPSDK_LINK) $(NSPR_LINK)
+ libderef_plugin_la_LDFLAGS = -avoid-version
+ 
+ #------------------------
+-# libdes-plugin
++# libpbe-plugin
+ #-----------------------
+-libdes_plugin_la_SOURCES = ldap/servers/plugins/rever/des.c \
++libpbe_plugin_la_SOURCES = ldap/servers/plugins/rever/pbe.c \
+ 	ldap/servers/plugins/rever/rever.c
+ 
+-libdes_plugin_la_CPPFLAGS = $(PLUGIN_CPPFLAGS) @svrcore_inc@
+-libdes_plugin_la_LIBADD = libslapd.la $(NSS_LINK)
+-libdes_plugin_la_LDFLAGS = -avoid-version
++libpbe_plugin_la_CPPFLAGS = $(PLUGIN_CPPFLAGS) @svrcore_inc@
++libpbe_plugin_la_LIBADD = libslapd.la $(NSS_LINK)
++libpbe_plugin_la_LDFLAGS = -avoid-version
+ 
+ #------------------------
+ # libdistrib-plugin
+diff --git a/Makefile.in b/Makefile.in
+index 930d22b..7fded4f 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -317,14 +317,6 @@ libderef_plugin_la_OBJECTS = $(am_libderef_plugin_la_OBJECTS)
+ libderef_plugin_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
+ 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+ 	$(libderef_plugin_la_LDFLAGS) $(LDFLAGS) -o $@
+-libdes_plugin_la_DEPENDENCIES = libslapd.la $(am__DEPENDENCIES_1)
+-am_libdes_plugin_la_OBJECTS =  \
+-	ldap/servers/plugins/rever/libdes_plugin_la-des.lo \
+-	ldap/servers/plugins/rever/libdes_plugin_la-rever.lo
+-libdes_plugin_la_OBJECTS = $(am_libdes_plugin_la_OBJECTS)
+-libdes_plugin_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
+-	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+-	$(libdes_plugin_la_LDFLAGS) $(LDFLAGS) -o $@
+ libdistrib_plugin_la_DEPENDENCIES = libslapd.la
+ am_libdistrib_plugin_la_OBJECTS =  \
+ 	ldap/servers/plugins/distrib/libdistrib_plugin_la-distrib.lo
+@@ -462,6 +454,14 @@ libpassthru_plugin_la_OBJECTS = $(am_libpassthru_plugin_la_OBJECTS)
+ libpassthru_plugin_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
+ 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+ 	$(libpassthru_plugin_la_LDFLAGS) $(LDFLAGS) -o $@
++libpbe_plugin_la_DEPENDENCIES = libslapd.la $(am__DEPENDENCIES_1)
++am_libpbe_plugin_la_OBJECTS =  \
++	ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo \
++	ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo
++libpbe_plugin_la_OBJECTS = $(am_libpbe_plugin_la_OBJECTS)
++libpbe_plugin_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
++	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
++	$(libpbe_plugin_la_LDFLAGS) $(LDFLAGS) -o $@
+ libposix_winsync_plugin_la_DEPENDENCIES = libslapd.la \
+ 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
+ am_libposix_winsync_plugin_la_OBJECTS = ldap/servers/plugins/posix-winsync/libposix_winsync_plugin_la-posix-winsync.lo \
+@@ -1011,14 +1011,14 @@ SOURCES = $(libavl_a_SOURCES) $(libldaputil_a_SOURCES) \
+ 	$(libbitwise_plugin_la_SOURCES) \
+ 	$(libchainingdb_plugin_la_SOURCES) \
+ 	$(libcollation_plugin_la_SOURCES) $(libcos_plugin_la_SOURCES) \
+-	$(libderef_plugin_la_SOURCES) $(libdes_plugin_la_SOURCES) \
+-	$(libdistrib_plugin_la_SOURCES) $(libdna_plugin_la_SOURCES) \
++	$(libderef_plugin_la_SOURCES) $(libdistrib_plugin_la_SOURCES) \
++	$(libdna_plugin_la_SOURCES) \
+ 	$(libhttp_client_plugin_la_SOURCES) \
+ 	$(liblinkedattrs_plugin_la_SOURCES) \
+ 	$(libmanagedentries_plugin_la_SOURCES) \
+ 	$(libmemberof_plugin_la_SOURCES) $(libns_dshttpd_la_SOURCES) \
+ 	$(libpam_passthru_plugin_la_SOURCES) \
+-	$(libpassthru_plugin_la_SOURCES) \
++	$(libpassthru_plugin_la_SOURCES) $(libpbe_plugin_la_SOURCES) \
+ 	$(libposix_winsync_plugin_la_SOURCES) \
+ 	$(libpresence_plugin_la_SOURCES) \
+ 	$(libpwdstorage_plugin_la_SOURCES) \
+@@ -1045,14 +1045,14 @@ DIST_SOURCES = $(libavl_a_SOURCES) $(libldaputil_a_SOURCES) \
+ 	$(libbitwise_plugin_la_SOURCES) \
+ 	$(libchainingdb_plugin_la_SOURCES) \
+ 	$(libcollation_plugin_la_SOURCES) $(libcos_plugin_la_SOURCES) \
+-	$(libderef_plugin_la_SOURCES) $(libdes_plugin_la_SOURCES) \
+-	$(libdistrib_plugin_la_SOURCES) $(libdna_plugin_la_SOURCES) \
++	$(libderef_plugin_la_SOURCES) $(libdistrib_plugin_la_SOURCES) \
++	$(libdna_plugin_la_SOURCES) \
+ 	$(libhttp_client_plugin_la_SOURCES) \
+ 	$(liblinkedattrs_plugin_la_SOURCES) \
+ 	$(libmanagedentries_plugin_la_SOURCES) \
+ 	$(libmemberof_plugin_la_SOURCES) $(libns_dshttpd_la_SOURCES) \
+ 	$(libpam_passthru_plugin_la_SOURCES) \
+-	$(libpassthru_plugin_la_SOURCES) \
++	$(libpassthru_plugin_la_SOURCES) $(libpbe_plugin_la_SOURCES) \
+ 	$(libposix_winsync_plugin_la_SOURCES) \
+ 	$(libpresence_plugin_la_SOURCES) \
+ 	$(libpwdstorage_plugin_la_SOURCES) \
+@@ -1435,7 +1435,7 @@ server_LTLIBRARIES = libslapd.la libns-dshttpd.la
+ serverplugin_LTLIBRARIES = libacl-plugin.la libattr-unique-plugin.la \
+ 	libautomember-plugin.la libback-ldbm.la libchainingdb-plugin.la \
+ 	libcollation-plugin.la libcos-plugin.la libderef-plugin.la \
+-	libdes-plugin.la libdistrib-plugin.la libhttp-client-plugin.la \
++	libpbe-plugin.la libdistrib-plugin.la libhttp-client-plugin.la \
+ 	liblinkedattrs-plugin.la libmanagedentries-plugin.la \
+ 	libmemberof-plugin.la libpassthru-plugin.la libpwdstorage-plugin.la \
+ 	libreferint-plugin.la libreplication-plugin.la libretrocl-plugin.la \
+@@ -2101,14 +2101,14 @@ libderef_plugin_la_LIBADD = libslapd.la $(LDAPSDK_LINK) $(NSPR_LINK)
+ libderef_plugin_la_LDFLAGS = -avoid-version
+ 
+ #------------------------
+-# libdes-plugin
++# libpbe-plugin
+ #-----------------------
+-libdes_plugin_la_SOURCES = ldap/servers/plugins/rever/des.c \
++libpbe_plugin_la_SOURCES = ldap/servers/plugins/rever/pbe.c \
+ 	ldap/servers/plugins/rever/rever.c
+ 
+-libdes_plugin_la_CPPFLAGS = $(PLUGIN_CPPFLAGS) @svrcore_inc@
+-libdes_plugin_la_LIBADD = libslapd.la $(NSS_LINK)
+-libdes_plugin_la_LDFLAGS = -avoid-version
++libpbe_plugin_la_CPPFLAGS = $(PLUGIN_CPPFLAGS) @svrcore_inc@
++libpbe_plugin_la_LIBADD = libslapd.la $(NSS_LINK)
++libpbe_plugin_la_LDFLAGS = -avoid-version
+ 
+ #------------------------
+ # libdistrib-plugin
+@@ -3271,20 +3271,6 @@ ldap/servers/plugins/deref/libderef_plugin_la-deref.lo:  \
+ 	ldap/servers/plugins/deref/$(DEPDIR)/$(am__dirstamp)
+ libderef-plugin.la: $(libderef_plugin_la_OBJECTS) $(libderef_plugin_la_DEPENDENCIES) 
+ 	$(libderef_plugin_la_LINK) -rpath $(serverplugindir) $(libderef_plugin_la_OBJECTS) $(libderef_plugin_la_LIBADD) $(LIBS)
+-ldap/servers/plugins/rever/$(am__dirstamp):
+-	@$(MKDIR_P) ldap/servers/plugins/rever
+-	@: > ldap/servers/plugins/rever/$(am__dirstamp)
+-ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp):
+-	@$(MKDIR_P) ldap/servers/plugins/rever/$(DEPDIR)
+-	@: > ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp)
+-ldap/servers/plugins/rever/libdes_plugin_la-des.lo:  \
+-	ldap/servers/plugins/rever/$(am__dirstamp) \
+-	ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp)
+-ldap/servers/plugins/rever/libdes_plugin_la-rever.lo:  \
+-	ldap/servers/plugins/rever/$(am__dirstamp) \
+-	ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp)
+-libdes-plugin.la: $(libdes_plugin_la_OBJECTS) $(libdes_plugin_la_DEPENDENCIES) 
+-	$(libdes_plugin_la_LINK) -rpath $(serverplugindir) $(libdes_plugin_la_OBJECTS) $(libdes_plugin_la_LIBADD) $(LIBS)
+ ldap/servers/plugins/distrib/$(am__dirstamp):
+ 	@$(MKDIR_P) ldap/servers/plugins/distrib
+ 	@: > ldap/servers/plugins/distrib/$(am__dirstamp)
+@@ -3565,6 +3551,20 @@ ldap/servers/plugins/passthru/libpassthru_plugin_la-ptutil.lo:  \
+ 	ldap/servers/plugins/passthru/$(DEPDIR)/$(am__dirstamp)
+ libpassthru-plugin.la: $(libpassthru_plugin_la_OBJECTS) $(libpassthru_plugin_la_DEPENDENCIES) 
+ 	$(libpassthru_plugin_la_LINK) -rpath $(serverplugindir) $(libpassthru_plugin_la_OBJECTS) $(libpassthru_plugin_la_LIBADD) $(LIBS)
++ldap/servers/plugins/rever/$(am__dirstamp):
++	@$(MKDIR_P) ldap/servers/plugins/rever
++	@: > ldap/servers/plugins/rever/$(am__dirstamp)
++ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp):
++	@$(MKDIR_P) ldap/servers/plugins/rever/$(DEPDIR)
++	@: > ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp)
++ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo:  \
++	ldap/servers/plugins/rever/$(am__dirstamp) \
++	ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp)
++ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo:  \
++	ldap/servers/plugins/rever/$(am__dirstamp) \
++	ldap/servers/plugins/rever/$(DEPDIR)/$(am__dirstamp)
++libpbe-plugin.la: $(libpbe_plugin_la_OBJECTS) $(libpbe_plugin_la_DEPENDENCIES) 
++	$(libpbe_plugin_la_LINK) -rpath $(serverplugindir) $(libpbe_plugin_la_OBJECTS) $(libpbe_plugin_la_LIBADD) $(LIBS)
+ ldap/servers/plugins/posix-winsync/$(am__dirstamp):
+ 	@$(MKDIR_P) ldap/servers/plugins/posix-winsync
+ 	@: > ldap/servers/plugins/posix-winsync/$(am__dirstamp)
+@@ -5105,10 +5105,10 @@ mostlyclean-compile:
+ 	-rm -f ldap/servers/plugins/retrocl/libretrocl_plugin_la-retrocl_rootdse.lo
+ 	-rm -f ldap/servers/plugins/retrocl/libretrocl_plugin_la-retrocl_trim.$(OBJEXT)
+ 	-rm -f ldap/servers/plugins/retrocl/libretrocl_plugin_la-retrocl_trim.lo
+-	-rm -f ldap/servers/plugins/rever/libdes_plugin_la-des.$(OBJEXT)
+-	-rm -f ldap/servers/plugins/rever/libdes_plugin_la-des.lo
+-	-rm -f ldap/servers/plugins/rever/libdes_plugin_la-rever.$(OBJEXT)
+-	-rm -f ldap/servers/plugins/rever/libdes_plugin_la-rever.lo
++	-rm -f ldap/servers/plugins/rever/libpbe_plugin_la-pbe.$(OBJEXT)
++	-rm -f ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo
++	-rm -f ldap/servers/plugins/rever/libpbe_plugin_la-rever.$(OBJEXT)
++	-rm -f ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo
+ 	-rm -f ldap/servers/plugins/roles/libroles_plugin_la-roles_cache.$(OBJEXT)
+ 	-rm -f ldap/servers/plugins/roles/libroles_plugin_la-roles_cache.lo
+ 	-rm -f ldap/servers/plugins/roles/libroles_plugin_la-roles_plugin.$(OBJEXT)
+@@ -5812,8 +5812,8 @@ distclean-compile:
+ @AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/retrocl/$(DEPDIR)/libretrocl_plugin_la-retrocl_po.Plo@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/retrocl/$(DEPDIR)/libretrocl_plugin_la-retrocl_rootdse.Plo@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/retrocl/$(DEPDIR)/libretrocl_plugin_la-retrocl_trim.Plo@am__quote@
+-@AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-des.Plo@am__quote@
+-@AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-rever.Plo@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-pbe.Plo@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-rever.Plo@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/roles/$(DEPDIR)/libroles_plugin_la-roles_cache.Plo@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/roles/$(DEPDIR)/libroles_plugin_la-roles_plugin.Plo@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@ldap/servers/plugins/rootdn_access/$(DEPDIR)/librootdn_access_plugin_la-rootdn_access.Plo@am__quote@
+@@ -7077,20 +7077,6 @@ ldap/servers/plugins/deref/libderef_plugin_la-deref.lo: ldap/servers/plugins/der
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libderef_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o ldap/servers/plugins/deref/libderef_plugin_la-deref.lo `test -f 'ldap/servers/plugins/deref/deref.c' || echo '$(srcdir)/'`ldap/servers/plugins/deref/deref.c
+ 
+-ldap/servers/plugins/rever/libdes_plugin_la-des.lo: ldap/servers/plugins/rever/des.c
+-@am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libdes_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT ldap/servers/plugins/rever/libdes_plugin_la-des.lo -MD -MP -MF ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-des.Tpo -c -o ldap/servers/plugins/rever/libdes_plugin_la-des.lo `test -f 'ldap/servers/plugins/rever/des.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/des.c
+-@am__fastdepCC_TRUE@	$(am__mv) ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-des.Tpo ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-des.Plo
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='ldap/servers/plugins/rever/des.c' object='ldap/servers/plugins/rever/libdes_plugin_la-des.lo' libtool=yes @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libdes_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o ldap/servers/plugins/rever/libdes_plugin_la-des.lo `test -f 'ldap/servers/plugins/rever/des.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/des.c
+-
+-ldap/servers/plugins/rever/libdes_plugin_la-rever.lo: ldap/servers/plugins/rever/rever.c
+-@am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libdes_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT ldap/servers/plugins/rever/libdes_plugin_la-rever.lo -MD -MP -MF ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-rever.Tpo -c -o ldap/servers/plugins/rever/libdes_plugin_la-rever.lo `test -f 'ldap/servers/plugins/rever/rever.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/rever.c
+-@am__fastdepCC_TRUE@	$(am__mv) ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-rever.Tpo ldap/servers/plugins/rever/$(DEPDIR)/libdes_plugin_la-rever.Plo
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='ldap/servers/plugins/rever/rever.c' object='ldap/servers/plugins/rever/libdes_plugin_la-rever.lo' libtool=yes @AMDEPBACKSLASH@
+-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+-@am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libdes_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o ldap/servers/plugins/rever/libdes_plugin_la-rever.lo `test -f 'ldap/servers/plugins/rever/rever.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/rever.c
+-
+ ldap/servers/plugins/distrib/libdistrib_plugin_la-distrib.lo: ldap/servers/plugins/distrib/distrib.c
+ @am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libdistrib_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT ldap/servers/plugins/distrib/libdistrib_plugin_la-distrib.lo -MD -MP -MF ldap/servers/plugins/distrib/$(DEPDIR)/libdistrib_plugin_la-distrib.Tpo -c -o ldap/servers/plugins/distrib/libdistrib_plugin_la-distrib.lo `test -f 'ldap/servers/plugins/distrib/distrib.c' || echo '$(srcdir)/'`ldap/servers/plugins/distrib/distrib.c
+ @am__fastdepCC_TRUE@	$(am__mv) ldap/servers/plugins/distrib/$(DEPDIR)/libdistrib_plugin_la-distrib.Tpo ldap/servers/plugins/distrib/$(DEPDIR)/libdistrib_plugin_la-distrib.Plo
+@@ -7329,6 +7315,20 @@ ldap/servers/plugins/passthru/libpassthru_plugin_la-ptutil.lo: ldap/servers/plug
+ @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+ @am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libpassthru_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o ldap/servers/plugins/passthru/libpassthru_plugin_la-ptutil.lo `test -f 'ldap/servers/plugins/passthru/ptutil.c' || echo '$(srcdir)/'`ldap/servers/plugins/passthru/ptutil.c
+ 
++ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo: ldap/servers/plugins/rever/pbe.c
++@am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libpbe_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo -MD -MP -MF ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-pbe.Tpo -c -o ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo `test -f 'ldap/servers/plugins/rever/pbe.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/pbe.c
++@am__fastdepCC_TRUE@	$(am__mv) ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-pbe.Tpo ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-pbe.Plo
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='ldap/servers/plugins/rever/pbe.c' object='ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo' libtool=yes @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libpbe_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o ldap/servers/plugins/rever/libpbe_plugin_la-pbe.lo `test -f 'ldap/servers/plugins/rever/pbe.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/pbe.c
++
++ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo: ldap/servers/plugins/rever/rever.c
++@am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libpbe_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo -MD -MP -MF ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-rever.Tpo -c -o ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo `test -f 'ldap/servers/plugins/rever/rever.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/rever.c
++@am__fastdepCC_TRUE@	$(am__mv) ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-rever.Tpo ldap/servers/plugins/rever/$(DEPDIR)/libpbe_plugin_la-rever.Plo
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	source='ldap/servers/plugins/rever/rever.c' object='ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo' libtool=yes @AMDEPBACKSLASH@
++@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
++@am__fastdepCC_FALSE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libpbe_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -c -o ldap/servers/plugins/rever/libpbe_plugin_la-rever.lo `test -f 'ldap/servers/plugins/rever/rever.c' || echo '$(srcdir)/'`ldap/servers/plugins/rever/rever.c
++
+ ldap/servers/plugins/posix-winsync/libposix_winsync_plugin_la-posix-winsync.lo: ldap/servers/plugins/posix-winsync/posix-winsync.c
+ @am__fastdepCC_TRUE@	$(LIBTOOL)  --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libposix_winsync_plugin_la_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS) -MT ldap/servers/plugins/posix-winsync/libposix_winsync_plugin_la-posix-winsync.lo -MD -MP -MF ldap/servers/plugins/posix-winsync/$(DEPDIR)/libposix_winsync_plugin_la-posix-winsync.Tpo -c -o ldap/servers/plugins/posix-winsync/libposix_winsync_plugin_la-posix-winsync.lo `test -f 'ldap/servers/plugins/posix-winsync/posix-winsync.c' || echo '$(srcdir)/'`ldap/servers/plugins/posix-winsync/posix-winsync.c
+ @am__fastdepCC_TRUE@	$(am__mv) ldap/servers/plugins/posix-winsync/$(DEPDIR)/libposix_winsync_plugin_la-posix-winsync.Tpo ldap/servers/plugins/posix-winsync/$(DEPDIR)/libposix_winsync_plugin_la-posix-winsync.Plo
+diff --git a/ldap/admin/src/scripts/50AES-pbe-plugin.ldif b/ldap/admin/src/scripts/50AES-pbe-plugin.ldif
+new file mode 100644
+index 0000000..564ceae
+--- /dev/null
++++ b/ldap/admin/src/scripts/50AES-pbe-plugin.ldif
+@@ -0,0 +1,16 @@
++dn: cn=AES,cn=Password Storage Schemes,cn=plugins,cn=config
++objectclass: top
++objectclass: nsSlapdPlugin
++objectclass: extensibleObject
++cn: AES
++nsslapd-pluginpath: libpbe-plugin
++nsslapd-plugininitfunc: aes_init
++nsslapd-plugintype: reverpwdstoragescheme
++nsslapd-pluginenabled: on
++nsslapd-pluginarg0: nsmultiplexorcredentials
++nsslapd-pluginarg1: nsds5ReplicaCredentials
++nsslapd-pluginprecedence: 1
++nsslapd-pluginid: ID
++nsslapd-pluginDescription: DESC
++nsslapd-pluginVersion: PACKAGE_VERSION
++nsslapd-pluginVendor: VENDOR
+diff --git a/ldap/admin/src/scripts/52updateAESplugin.pl b/ldap/admin/src/scripts/52updateAESplugin.pl
+new file mode 100644
+index 0000000..6a8a885
+--- /dev/null
++++ b/ldap/admin/src/scripts/52updateAESplugin.pl
+@@ -0,0 +1,84 @@
++use Mozilla::LDAP::Conn;
++use Mozilla::LDAP::Entry;
++use Mozilla::LDAP::Utils qw(normalizeDN);
++use Mozilla::LDAP::API qw(:constant ldap_url_parse ldap_explode_dn);
++use File::Basename;
++use File::Copy;
++use DSUtil qw(debug serverIsRunning);
++
++#
++# Check if there is a DES plugin and make sure the AES plugin contains the same attributes
++#
++sub runinst {
++    my ($inf, $inst, $dseldif, $conn) = @_;
++    my @attrs;
++    my @attrs_to_add;
++    my $aes_count = 0;
++    my $des_count = 0;
++    my $i = 0;
++
++    my $aes_dn = "cn=AES,cn=Password Storage Schemes,cn=plugins,cn=config";
++    my $aes_entry = $conn->search($aes_dn, "base", "(cn=*)");
++    if (!$aes_entry) {
++        # No AES plugin - nothing to do
++        return ();
++    }
++
++    # We need to grab the AES plugin args...
++    while(1){
++        my $argattr = "nsslapd-pluginarg" . $i;
++        my $val = $aes_entry->getValues($argattr);
++        if($val ne ""){
++            $attrs[$aes_count] = $val;
++            $aes_count++;
++        } else {
++            last;
++        }
++        $i++;
++    }
++
++    # Grab the DES plugin
++    my $des_dn = "cn=DES,cn=Password Storage Schemes,cn=plugins,cn=config";
++    my $des_entry = $conn->search($des_dn, "base", "(cn=*)");
++    if (!$des_entry) {
++        # No DES plugin - nothing to do
++        return ();
++    }
++
++    # We need to check the DES plugin args against the AES args.
++    $i = 0;
++    while(1){
++        my $argattr = "nsslapd-pluginarg" . $i;
++        my $val = $des_entry->getValues($argattr);
++        if($val eq ""){
++            last;
++        }
++        if(!($val ~~ @attrs) ){
++            $attrs_to_add[$des_count] = $val;
++            $des_count++;
++        }
++        $i++;
++    }
++
++    # Add the missing attributes to the AES plugin
++    if($#attrs_to_add >= 0){
++        foreach $val (@attrs_to_add){
++            $aes_entry->addValue("nsslapd-pluginarg" . $aes_count, $val);
++	    $aes_count++;
++        }
++        $conn->update($aes_entry);
++    }
++
++    # Change replication plugin dependency from DES to AES
++    my $mmr_entry = $conn->search("cn=Multimaster Replication Plugin,cn=plugins,cn=config", "base", "(cn=*)");
++    $mmr_entry->removeValue("nsslapd-plugin-depends-on-named", "DES");
++    $mmr_entry->addValue("nsslapd-plugin-depends-on-named", "AES");
++    $conn->update($mmr_entry);
++
++    # Change the des plugin to use the new libpbe-plugin library
++    $des_entry->{"nsslapd-pluginPath"} = [ "libpbe-plugin" ];
++    $conn->update($des_entry);
++
++    return ();
++}
++
+diff --git a/ldap/admin/src/scripts/DSCreate.pm.in b/ldap/admin/src/scripts/DSCreate.pm.in
+index dbfcedf..8897563 100644
+--- a/ldap/admin/src/scripts/DSCreate.pm.in
++++ b/ldap/admin/src/scripts/DSCreate.pm.in
+@@ -1088,6 +1088,7 @@ sub updateTmpfilesDotD {
+ }
+ 
+ sub updateSystemD {
++    my $noservicelink = shift;
+     my $inf = shift;
+     my $unitdir = "@systemdsystemunitdir@";
+     my $confbasedir = "@systemdsystemconfdir@";
+@@ -1119,7 +1120,7 @@ sub updateSystemD {
+             next;
+         } else {
+             my $servicelink = "$confdir/$pkgname\@$inst.service";
+-            if (! -l $servicelink) {
++            if (! -l $servicelink && ! $noservicelink) {
+                 if (!symlink($servicefile, $servicelink)) {
+                     debug(1, "error updating link $servicelink to $servicefile - $!\n");
+                     push @errs, [ 'error_linking_file', $servicefile, $servicelink, $! ];
+@@ -1206,7 +1207,7 @@ sub createDSInstance {
+         return @errs;
+     }
+ 
+-    if (@errs = updateSystemD($inf)) {
++    if (@errs = updateSystemD(0, $inf)) {
+         return @errs;
+     }
+ 
+diff --git a/ldap/admin/src/scripts/DSMigration.pm.in b/ldap/admin/src/scripts/DSMigration.pm.in
+index 3a73f98..e1069f7 100644
+--- a/ldap/admin/src/scripts/DSMigration.pm.in
++++ b/ldap/admin/src/scripts/DSMigration.pm.in
+@@ -1161,7 +1161,7 @@ sub migrateDS {
+         }
+ 
+ 	# do the systemd stuff
+-        @errs = DSCreate::updateSystemD($inf);
++        @errs = DSCreate::updateSystemD(0, $inf);
+         if (@errs) {
+             $mig->msg(@errs);
+             goto cleanup;
+diff --git a/ldap/admin/src/scripts/DSUpdate.pm.in b/ldap/admin/src/scripts/DSUpdate.pm.in
+index ecdfeb7..f1bc802 100644
+--- a/ldap/admin/src/scripts/DSUpdate.pm.in
++++ b/ldap/admin/src/scripts/DSUpdate.pm.in
+@@ -416,7 +416,7 @@ sub updateDSInstance {
+ 
+     push @errs, updateTmpfilesDotD($inf);
+ 
+-    push @errs, updateSystemD($inf);
++    push @errs, updateSystemD(1, $inf);
+ 
+     return @errs;
+ }
+diff --git a/ldap/ldif/50replication-plugins.ldif b/ldap/ldif/50replication-plugins.ldif
+index af0c46b..c259ac6 100644
+--- a/ldap/ldif/50replication-plugins.ldif
++++ b/ldap/ldif/50replication-plugins.ldif
+@@ -21,6 +21,6 @@ nsslapd-plugininitfunc: replication_multimaster_plugin_init
+ nsslapd-plugintype: object
+ nsslapd-pluginenabled: on
+ nsslapd-plugin-depends-on-named: ldbm database
+-nsslapd-plugin-depends-on-named: DES
++nsslapd-plugin-depends-on-named: AES
+ nsslapd-plugin-depends-on-named: Class of Service
+ 
+diff --git a/ldap/ldif/template-dse.ldif.in b/ldap/ldif/template-dse.ldif.in
+index c626726..4e45145 100644
+--- a/ldap/ldif/template-dse.ldif.in
++++ b/ldap/ldif/template-dse.ldif.in
+@@ -196,12 +196,26 @@ nsslapd-plugininitfunc: ns_mta_md5_pwd_storage_scheme_init
+ nsslapd-plugintype: pwdstoragescheme
+ nsslapd-pluginenabled: on
+ 
++dn: cn=AES,cn=Password Storage Schemes,cn=plugins,cn=config
++objectclass: top
++objectclass: nsSlapdPlugin
++objectclass: extensibleObject
++cn: AES
++nsslapd-pluginpath: libpbe-plugin
++nsslapd-plugininitfunc: aes_init
++nsslapd-plugintype: reverpwdstoragescheme
++nsslapd-pluginenabled: on
++nsslapd-pluginarg0: nsmultiplexorcredentials
++nsslapd-pluginarg1: nsds5ReplicaCredentials
++nsslapd-pluginid: aes-storage-scheme
++nsslapd-pluginprecedence: 1
++
+ dn: cn=DES,cn=Password Storage Schemes,cn=plugins,cn=config
+ objectclass: top
+ objectclass: nsSlapdPlugin
+ objectclass: extensibleObject
+ cn: DES
+-nsslapd-pluginpath: libdes-plugin
++nsslapd-pluginpath: libpbe-plugin
+ nsslapd-plugininitfunc: des_init
+ nsslapd-plugintype: reverpwdstoragescheme
+ nsslapd-pluginenabled: on
+diff --git a/ldap/servers/plugins/rever/des.c b/ldap/servers/plugins/rever/des.c
+deleted file mode 100644
+index 73830f0..0000000
+--- a/ldap/servers/plugins/rever/des.c
++++ /dev/null
+@@ -1,551 +0,0 @@
+-/** BEGIN COPYRIGHT BLOCK
+- * This Program is free software; you can redistribute it and/or modify it under
+- * the terms of the GNU General Public License as published by the Free Software
+- * Foundation; version 2 of the License.
+- * 
+- * This Program is distributed in the hope that it will be useful, but WITHOUT
+- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+- * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+- * 
+- * You should have received a copy of the GNU General Public License along with
+- * this Program; if not, write to the Free Software Foundation, Inc., 59 Temple
+- * Place, Suite 330, Boston, MA 02111-1307 USA.
+- * 
+- * In addition, as a special exception, Red Hat, Inc. gives You the additional
+- * right to link the code of this Program with code not covered under the GNU
+- * General Public License ("Non-GPL Code") and to distribute linked combinations
+- * including the two, subject to the limitations in this paragraph. Non-GPL Code
+- * permitted under this exception must only link to the code of this Program
+- * through those well defined interfaces identified in the file named EXCEPTION
+- * found in the source code files (the "Approved Interfaces"). The files of
+- * Non-GPL Code may instantiate templates or use macros or inline functions from
+- * the Approved Interfaces without causing the resulting work to be covered by
+- * the GNU General Public License. Only Red Hat, Inc. may make changes or
+- * additions to the list of Approved Interfaces. You must obey the GNU General
+- * Public License in all respects for all of the Program code and other code used
+- * in conjunction with the Program except the Non-GPL Code covered by this
+- * exception. If you modify this file, you may extend this exception to your
+- * version of the file, but you are not obligated to do so. If you do not wish to
+- * provide this exception without modification, you must delete this exception
+- * statement from your version and license this file solely under the GPL without
+- * exception. 
+- * 
+- * 
+- * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
+- * Copyright (C) 2005 Red Hat, Inc.
+- * All rights reserved.
+- * END COPYRIGHT BLOCK **/
+-
+-#ifdef HAVE_CONFIG_H
+-#  include <config.h>
+-#endif
+-
+-/* from /usr/project/iplanet/ws/ds5.ke/ns/svrcore/pkcs7/tstarchive.c */
+-
+-#include <string.h>
+-#include <stdio.h>
+-
+-#include <ldap.h>
+-#include <nspr.h> 
+-#include <nss.h> 
+-#include <secmod.h>
+-/*
+-#include <secasn1.h>
+-#include <secpkcs7.h>
+-*/
+-#include <key.h>
+-#include <certdb.h>
+-#include <cert.h>
+-#include <svrcore.h>
+-#include <secmodt.h>
+-#include <prtypes.h>
+-#include <seccomon.h>
+-#include <pk11func.h>
+-
+-#define NEED_TOK_DES /* see slap.h - defines tokDes and ptokDes */
+-#include "rever.h"
+-#include <slap.h>
+-#include "slapi-plugin.h"
+-#include <uuid.h>
+-
+-
+-struct pk11MechItem
+-{
+-  CK_MECHANISM_TYPE type;
+-  const char *mechName;
+-};
+-static const struct pk11MechItem mymech = { CKM_DES_CBC, "DES CBC encryption" };
+-
+-
+-static Slapi_Mutex *mylock = NULL;
+-
+-struct pk11ContextStore
+-{
+-  PK11SlotInfo *slot;
+-  const struct pk11MechItem *mech;
+- 
+-  PK11SymKey *key;
+-  SECItem *params;
+- 
+-  int length;
+-  unsigned char *crypt;
+-};
+-
+-static int encode_path(char *inPlain, char **outCipher, char *path);
+-static int decode_path(char *inCipher, char **outPlain, char *path);
+-static SVRCOREError genKey(struct pk11ContextStore **out, const char *token, char *path);
+-static SVRCOREError cryptPassword(struct pk11ContextStore *store, char * clear, unsigned char **out);
+-static SVRCOREError decryptPassword(struct pk11ContextStore *store, unsigned char *cipher, char **out, int len);
+-static void freeDes(struct pk11ContextStore *out);
+-
+-void
+-init_des_plugin()
+-{
+-	mylock = slapi_new_mutex();
+-}
+-
+-int
+-encode(char *inPlain, char **outCipher)
+-{
+-	return encode_path(inPlain, outCipher, NULL);
+-}
+-
+-static int
+-encode_path(char *inPlain, char **outCipher, char *path)
+-{
+-	struct pk11ContextStore *context = NULL;
+-	int err;
+-
+-	unsigned char *cipher = NULL;
+-	char *tmp = NULL;
+-	char *base = NULL;
+-
+-
+-	*outCipher = NULL;
+-	err = 1;
+-
+-	if ( genKey(&context, tokDes, path) == SVRCORE_Success )
+-	{
+-		/* Try an encryption */
+-		if ( cryptPassword(context, inPlain, &cipher) == SVRCORE_Success )
+-		{
+-			base = BTOA_DataToAscii(cipher, context->length);
+-			if ( base != NULL )
+-			{	
+-				tmp = slapi_ch_malloc( 3 + strlen(REVER_SCHEME_NAME) + strlen(base));
+-				if ( tmp != NULL )
+-				{
+-					sprintf( tmp, "%c%s%c%s", PWD_HASH_PREFIX_START, REVER_SCHEME_NAME, PWD_HASH_PREFIX_END, base);
+-					*outCipher = tmp;
+-					tmp = NULL;
+-					err = 0;
+-				}
+-				PORT_Free(base);
+-			}
+-		}
+-	}
+-	
+-	freeDes(context);
+-	slapi_ch_free((void **) &context);
+-	return(err);
+-}
+-
+-int
+-decode(char *inCipher, char **outPlain)
+-{
+-	return decode_path(inCipher, outPlain, NULL);
+-}
+-
+-
+-static int
+-decode_path(char *inCipher, char **outPlain, char *path)
+-{
+-	struct pk11ContextStore *context = NULL;
+-	char *plain= NULL;
+-	int err;
+-
+-	unsigned char *base = NULL;
+-	int len = 0;
+-
+-
+-	*outPlain = NULL;
+-	err = 1;
+-
+-	if ( genKey(&context, tokDes, path) == SVRCORE_Success )
+-	{
+-		/* it seems that there is memory leak in that function: bug 400170 */
+-
+-		base = ATOB_AsciiToData(inCipher, (unsigned int*)&len);
+-		if ( base != NULL )
+-		{
+-			if ( decryptPassword(context, base, &plain, len) == SVRCORE_Success )
+-			{
+-				*outPlain = plain;
+-				err = 0;
+-			}
+-		}
+-	}
+-
+-	PORT_Free(base);
+-	freeDes(context);
+-	slapi_ch_free((void **) &context);
+-	return(err);
+-}
+-
+-static void freeDes(struct pk11ContextStore *out)
+-{
+-	if (out)
+-	{
+-		if (out->slot) 
+-			slapd_pk11_freeSlot(out->slot);
+-		if (out->key) 
+-			slapd_pk11_freeSymKey(out->key);
+-		if (out->params) 
+-			SECITEM_FreeItem(out->params,PR_TRUE);
+-		if (out->crypt)
+-			free(out->crypt);
+-	}
+-}
+-
+-static SVRCOREError genKey(struct pk11ContextStore **out, const char *token, char *path)
+-{
+-	SVRCOREError err = SVRCORE_Success;
+-	struct pk11ContextStore *store = NULL;
+-	SECItem *pwitem = NULL;
+-	SECItem *result = NULL;
+-	SECAlgorithmID *algid = NULL;
+-	SECOidTag algoid;
+-	SECItem *salt = NULL;
+-	CK_MECHANISM pbeMech;
+-	CK_MECHANISM cryptoMech;
+-
+-	char *configdir = NULL;
+-	char *iv = NULL;
+-
+-	store = (struct pk11ContextStore*)slapi_ch_malloc(sizeof(*store));
+-	if (store == NULL) 
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	*out = store;
+-
+-	/* Low-level init */
+-	store->slot = NULL;
+-	store->key = NULL;
+-	store->params = NULL;
+-	store->crypt = NULL;
+-
+-	/* Use the tokenName to find a PKCS11 slot */
+-	store->slot = slapd_pk11_findSlotByName((char *)token);
+-	if (store->slot == NULL) 
+-	{
+-		err = SVRCORE_NoSuchToken_Error;
+-		goto done;
+-	}
+-
+-	/* Generate a key and parameters to do the encryption */
+-	store->mech = &mymech;
+-
+-	/* Generate a unique id, used as salt for the key generation */
+-	if ( path == NULL )
+-	{
+-		configdir = config_get_configdir();
+-		if ( configdir == NULL )
+-		{
+-		  err = SVRCORE_System_Error;
+-		  goto done;
+-		}
+-	}
+-	else
+-	{
+-		configdir = slapi_ch_strdup(path);
+-	}
+-	if ( slapi_uniqueIDGenerateFromNameString (&iv, NULL, configdir, strlen(configdir)) != UID_SUCCESS )
+-	{
+-	  slapi_ch_free((void**)&configdir);
+-	  err = SVRCORE_System_Error;
+-	  goto done;
+-	}
+-	slapi_ch_free((void**)&configdir);
+-
+-	pwitem = (SECItem *) PORT_Alloc(sizeof(SECItem));
+-	if (pwitem == NULL)
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	pwitem->type = siBuffer;
+-	pwitem->data = (unsigned char *)PORT_Alloc(strlen(iv)+1);
+-	if (pwitem->data == NULL)
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	strcpy((char*)pwitem->data, iv);		
+-	pwitem->len = strlen(iv) + 1;
+-
+-	algoid = SEC_OID_PKCS5_PBE_WITH_MD2_AND_DES_CBC;
+-
+-	salt = (SECItem *) PORT_Alloc(sizeof(SECItem));
+-	if (salt == NULL)
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	salt->type = siBuffer;
+-	salt->data = (unsigned char *)PORT_Alloc(strlen(iv)+1);
+-	if ( salt->data == NULL )
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	strcpy((char*)salt->data, iv);		
+-	salt->len = strlen(iv) + 1;
+-
+-	algid = slapd_pk11_createPBEAlgorithmID(algoid, 2, salt);
+-
+-	slapi_lock_mutex(mylock);
+-	store->key = slapd_pk11_pbeKeyGen(store->slot, algid, pwitem, 0, 0);
+-	if (store->key == 0)
+-	{
+-      slapi_unlock_mutex(mylock);
+-	  err = SVRCORE_System_Error;
+-	  goto done;
+-	}
+-
+-	slapi_unlock_mutex(mylock);
+-    pbeMech.mechanism = slapd_pk11_algtagToMechanism(algoid);
+-    result = slapd_pk11_paramFromAlgid(algid);
+-    secoid_destroyAlgorithmID(algid, PR_TRUE);
+-    pbeMech.pParameter = result->data;
+-    pbeMech.ulParameterLen = result->len;
+-    if(slapd_pk11_mapPBEMechanismToCryptoMechanism(&pbeMech, &cryptoMech, pwitem,
+-                        PR_FALSE) != CKR_OK) 
+-	{
+-		SECITEM_FreeItem(result, PR_TRUE); 
+-        err = SVRCORE_System_Error;
+-        goto done;
+-    }
+-	SECITEM_FreeItem(result, PR_TRUE);
+-	SECITEM_FreeItem(pwitem, PR_TRUE);
+-	SECITEM_FreeItem(salt, PR_TRUE);
+-	store->params = (SECItem *) PORT_Alloc(sizeof(SECItem));
+-    if (store->params == NULL) 
+-	{
+-	  err = SVRCORE_System_Error;
+-	  goto done;
+-	}
+-    store->params->type = store->mech->type;
+-    store->params->data = (unsigned char *)PORT_Alloc(cryptoMech.ulParameterLen);
+-    if (store->params->data == NULL) 
+-	{
+-	  err = SVRCORE_System_Error;
+-	  goto done;
+-	}
+-    memcpy(store->params->data, (unsigned char *)cryptoMech.pParameter, cryptoMech.ulParameterLen);
+-    store->params->len = cryptoMech.ulParameterLen;
+-	PORT_Free(cryptoMech.pParameter);
+-
+-done:
+-	slapi_ch_free((void**)&iv);
+-	return (err);
+-}
+-
+-static SVRCOREError decryptPassword(struct pk11ContextStore *store, unsigned char *cipher, char **out, int len)
+-{
+-	SVRCOREError err = SVRCORE_Success;
+-	unsigned char *plain = NULL;
+-	unsigned char *cipher_with_padding = NULL;
+-	SECStatus rv;
+-	PK11Context *ctx = 0;
+-	int outLen = 0;
+-	int blocksize = 0;
+-
+-	blocksize = slapd_pk11_getBlockSize(store->mech->type, 0);
+-	store->length = len;
+-
+-	/* store->length is the max. length of the returned clear text - 
+-	   must be >= length of crypted bytes - also must be a multiple
+-	   of blocksize */
+-	if (blocksize != 0)
+-	{
+-		store->length += blocksize - (store->length % blocksize);
+-	}
+-
+-	/* plain will hold the returned clear text */
+-	plain = (unsigned char *)slapi_ch_calloc(sizeof(unsigned char),
+-											 store->length+1);
+-	if (!plain) 
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-
+-	/* create a buffer holding the original cipher bytes, padded with
+-	   zeros to a multiple of blocksize - do not need +1 since buffer is not
+-	   a string */
+-	cipher_with_padding = (unsigned char *)slapi_ch_calloc(sizeof(unsigned char),
+-														   store->length);
+-	if (!cipher_with_padding)
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	memcpy(cipher_with_padding, cipher, len);
+-
+-	ctx = slapd_pk11_createContextBySymKey(store->mech->type, CKA_DECRYPT,
+-	  store->key, store->params);
+-	if (!ctx) 
+-	{
+-		err = SVRCORE_System_Error;
+-		goto done;
+-	}
+-
+-	/* warning - there is a purify UMR in the NSS des code - you may see it when the
+-	   password is not a multiple of 8 bytes long */
+-	rv = slapd_pk11_cipherOp(ctx, plain, &outLen, store->length,
+-			cipher_with_padding, store->length);
+-	if (rv)
+-	{
+-		err = SVRCORE_System_Error;
+-	}
+-
+-	rv = slapd_pk11_finalize(ctx);
+-	/* we must do the finalize, but we only want to set the err return
+-	   code if it is not already set */
+-	if (rv && (SVRCORE_Success == err))
+-		err = SVRCORE_System_Error;
+-
+-done:
+-	if (err == SVRCORE_Success)
+-	{
+-		*out = (char *)plain;
+-	}
+-	else
+-	{
+-		slapi_ch_free((void **)&plain);
+-	}
+-
+-	slapi_ch_free((void **)&cipher_with_padding);
+-	/* We should free the PK11Context... Something like : */
+-	if (ctx) slapd_pk11_destroyContext(ctx, PR_TRUE);
+-
+-	return err;
+-}
+-
+-static SVRCOREError cryptPassword(struct pk11ContextStore *store, char * clear, unsigned char **out)
+-{
+-	SVRCOREError err = SVRCORE_Success;
+-	SECStatus rv;
+-	PK11Context *ctx = 0;
+-	int outLen = 0;
+-	int blocksize = 0;
+-	unsigned char *clear_with_padding = NULL; /* clear with padding up to blocksize */
+-
+-	blocksize = slapd_pk11_getBlockSize(store->mech->type, 0);
+-	store->length = strlen(clear);
+-
+-	/* the size of the clear text buffer passed to the des encryption functions
+-	   must be a multiple of blocksize (usually 8 bytes) - we allocate a buffer
+-	   of this size, copy the clear text password into it, and pad the rest with
+-	   zeros */
+-	if (blocksize != 0)
+-	{
+-		store->length += blocksize - (store->length % blocksize);
+-	}
+-
+-	/* store->crypt will hold the crypted password - it must be >= clear length */
+-	/* store->crypt is freed in NSS; let's not use slapi_ch_calloc */
+-	store->crypt = (unsigned char *)calloc(sizeof(unsigned char),
+-													store->length+1);
+-	if (!store->crypt) 
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-
+-	/* create a buffer big enough to hold the clear text password and padding */
+-	clear_with_padding = (unsigned char *)slapi_ch_calloc(sizeof(unsigned char),
+-														  store->length+1);
+-	if (!clear_with_padding)
+-	{
+-		err = SVRCORE_NoMemory_Error;
+-		goto done;
+-	}
+-	/* copy the clear text password into the buffer - the calloc insures the
+-	   remainder is zero padded */
+-	strcpy((char *)clear_with_padding, clear);
+-
+-	ctx = slapd_pk11_createContextBySymKey(store->mech->type, CKA_ENCRYPT,
+-	  store->key, store->params);
+-	if (!ctx) 
+-	{
+-		err = SVRCORE_System_Error;
+-		goto done;
+-	}
+-
+-	rv = slapd_pk11_cipherOp(ctx, store->crypt, &outLen, store->length,
+-			clear_with_padding, store->length);
+-	if (rv)
+-	{
+-		err = SVRCORE_System_Error;
+-	}
+-
+-	rv = slapd_pk11_finalize(ctx);
+-	/* we must do the finalize, but we only want to set the err return
+-	   code if it is not already set */
+-	if (rv && (SVRCORE_Success == err))
+-		err = SVRCORE_System_Error;
+-
+-done:
+-	if (err == SVRCORE_Success)
+-		*out = store->crypt;
+-
+-	slapi_ch_free((void **)&clear_with_padding);
+-	/* We should free the PK11Context... Something like : */
+-	if (ctx) slapd_pk11_destroyContext(ctx, PR_TRUE);
+-
+-	return err;
+-}
+-
+-/*
+-  The UUID name based generator was broken on x86 platforms.  We use
+-  this to generate the password encryption key.  During migration,
+-  we have to fix this so we can use the fixed generator.  The env.
+-  var USE_BROKEN_UUID tells the uuid generator to use the old
+-  broken method to create the UUID.  That will allow us to decrypt
+-  the password to the correct clear text, then we can turn off
+-  the broken method and use the fixed method to encrypt the
+-  password.
+-*/
+-char *
+-migrateCredentials(char *oldpath, char *newpath, char *oldcred)
+-{
+-	static char *useBrokenUUID = "USE_BROKEN_UUID=1";
+-	static char *disableBrokenUUID = "USE_BROKEN_UUID=0";
+-	char *plain = NULL;
+-	char *cipher = NULL;
+-
+-	init_des_plugin();
+-
+-	slapd_pk11_configurePKCS11(NULL, NULL, tokDes, ptokDes, NULL, NULL, NULL, NULL, 0, 0 );	
+-	NSS_NoDB_Init(NULL);
+-
+-	if (getenv("MIGRATE_BROKEN_PWD")) {
+-		putenv(useBrokenUUID);
+-	}
+-
+-	if ( decode_path(oldcred, &plain, oldpath) == 0 )
+-	{
+-		if (getenv("MIGRATE_BROKEN_PWD")) {
+-			putenv(disableBrokenUUID);
+-		}
+-		if ( encode_path(plain, &cipher, newpath) != 0 )
+-			return(NULL);
+-		else
+-			return(cipher);
+-	}
+-	else
+-		return(NULL);
+-}
+diff --git a/ldap/servers/plugins/rever/pbe.c b/ldap/servers/plugins/rever/pbe.c
+new file mode 100644
+index 0000000..abb8d1b
+--- /dev/null
++++ b/ldap/servers/plugins/rever/pbe.c
+@@ -0,0 +1,621 @@
++/** BEGIN COPYRIGHT BLOCK
++ * This Program is free software; you can redistribute it and/or modify it under
++ * the terms of the GNU General Public License as published by the Free Software
++ * Foundation; version 2 of the License.
++ * 
++ * This Program is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
++ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
++ * 
++ * You should have received a copy of the GNU General Public License along with
++ * this Program; if not, write to the Free Software Foundation, Inc., 59 Temple
++ * Place, Suite 330, Boston, MA 02111-1307 USA.
++ * 
++ * In addition, as a special exception, Red Hat, Inc. gives You the additional
++ * right to link the code of this Program with code not covered under the GNU
++ * General Public License ("Non-GPL Code") and to distribute linked combinations
++ * including the two, subject to the limitations in this paragraph. Non-GPL Code
++ * permitted under this exception must only link to the code of this Program
++ * through those well defined interfaces identified in the file named EXCEPTION
++ * found in the source code files (the "Approved Interfaces"). The files of
++ * Non-GPL Code may instantiate templates or use macros or inline functions from
++ * the Approved Interfaces without causing the resulting work to be covered by
++ * the GNU General Public License. Only Red Hat, Inc. may make changes or
++ * additions to the list of Approved Interfaces. You must obey the GNU General
++ * Public License in all respects for all of the Program code and other code used
++ * in conjunction with the Program except the Non-GPL Code covered by this
++ * exception. If you modify this file, you may extend this exception to your
++ * version of the file, but you are not obligated to do so. If you do not wish to
++ * provide this exception without modification, you must delete this exception
++ * statement from your version and license this file solely under the GPL without
++ * exception. 
++ * 
++ * 
++ * Copyright (C) 2001 Sun Microsystems, Inc. Used by permission.
++ * Copyright (C) 2015 Red Hat, Inc.
++ * All rights reserved.
++ * END COPYRIGHT BLOCK **/
++
++#ifdef HAVE_CONFIG_H
++#  include <config.h>
++#endif
++
++#include <string.h>
++#include <stdio.h>
++
++#include <ldap.h>
++#include <nspr.h> 
++#include <nss.h> 
++#include <secmod.h>
++/*
++#include <secasn1.h>
++#include <secpkcs7.h>
++*/
++#include <key.h>
++#include <certdb.h>
++#include <cert.h>
++#include <svrcore.h>
++#include <secmodt.h>
++#include <prtypes.h>
++#include <seccomon.h>
++#include <pk11func.h>
++
++#define NEED_TOK_PBE /* see slap.h - defines tokPBE and ptokPBE */
++#include "rever.h"
++#include <slap.h>
++#include "slapi-plugin.h"
++#include <uuid.h>
++#include <plbase64.h>
++
++struct pk11MechItem
++{
++    CK_MECHANISM_TYPE type;
++    const char *mechName;
++};
++
++static const struct pk11MechItem DESmech = { CKM_DES_CBC, "DES CBC encryption" };
++static const struct pk11MechItem AESmech = { CKM_AES_CBC, "AES CBC encryption" };
++static Slapi_Mutex *pbe_lock = NULL;
++
++struct pk11ContextStore
++{
++    PK11SlotInfo *slot;
++    const struct pk11MechItem *mech;
++    PK11SymKey *key;
++    SECItem *params;
++    int length;
++    unsigned char *crypt;
++    char *algid_base64;
++};
++
++/*
++ *  der_algid converting functions:
++ *
++ *  SECStatus ATOB_ConvertAsciiToItem(SECItem *binary_item, const char *ascii);
++ *  char *    BTOA_ConvertItemToAscii(SECItem *binary_item);
++ *
++ */
++
++static int encode_path(char *inPlain, char **outCipher, char *path, int mech);
++static int decode_path(char *inCipher, char **outPlain, char *path, int mech, char *algid);
++static SVRCOREError genKey(struct pk11ContextStore **out, const char *token, char *path, int mech, PRArenaPool *arena, char *algid);
++static SVRCOREError cryptPassword(struct pk11ContextStore *store, char * clear, unsigned char **out);
++static SVRCOREError decryptPassword(struct pk11ContextStore *store, unsigned char *cipher, char **out, int len);
++static void freePBE(struct pk11ContextStore *store);
++
++void
++init_pbe_plugin()
++{
++    if(!pbe_lock){
++        pbe_lock = slapi_new_mutex();
++    }
++}
++
++int
++encode(char *inPlain, char **outCipher, int mech)
++{
++    return encode_path(inPlain, outCipher, NULL, mech);
++}
++
++static int
++encode_path(char *inPlain, char **outCipher, char *path, int mech)
++{
++    struct pk11ContextStore *context = NULL;
++    PRArenaPool *arena = NULL;
++    unsigned char *cipher = NULL;
++    char *tmp = NULL;
++    char *base = NULL;
++    int len = 0;
++    int err;
++
++    *outCipher = NULL;
++    err = 1;
++
++    if ( genKey(&context, tokPBE, path, mech, arena, NULL) == SVRCORE_Success ){
++        /* Try an encryption */
++        if ( cryptPassword(context, inPlain, &cipher) == SVRCORE_Success ){
++            base = BTOA_DataToAscii(cipher, context->length);
++            if ( base != NULL ){
++                const char *scheme;
++                if (mech == AES_MECH){
++                    scheme = AES_REVER_SCHEME_NAME;
++                    len = 3 + strlen(scheme)+ strlen(context->algid_base64)  + strlen(base) + 1;
++                    if( (tmp = slapi_ch_malloc( len )) ){
++                    	/*
++                    	 * {AES-<BASE64_ALG_ID>}<ENCODED PASSWORD>
++                    	 */
++                        sprintf( tmp, "%c%s-%s%c%s", PWD_HASH_PREFIX_START, scheme,
++                                 context->algid_base64,PWD_HASH_PREFIX_END, base);
++                    }
++                } else {
++                    /* Old school DES */
++                    scheme = DES_REVER_SCHEME_NAME;
++                    if((tmp = slapi_ch_malloc( 3 + strlen(scheme) + strlen(base)))){
++                        sprintf( tmp, "%c%s%c%s", PWD_HASH_PREFIX_START, scheme,
++                                 PWD_HASH_PREFIX_END, base);
++                    }
++                }
++                if ( tmp != NULL ){
++                    *outCipher = tmp;
++                    tmp = NULL;
++                    err = 0;
++                }
++                PORT_Free(base);
++            }
++        }
++    }
++    freePBE(context);
++
++    return(err);
++}
++
++int
++decode(char *inCipher, char **outPlain, int mech, char *algid)
++{
++    return decode_path(inCipher, outPlain, NULL, mech, algid);
++}
++
++
++static int
++decode_path(char *inCipher, char **outPlain, char *path, int mech, char *algid)
++{
++    struct pk11ContextStore *context = NULL;
++    PRArenaPool *arena = NULL;
++    unsigned char *base = NULL;
++    char *plain = NULL;
++    int err;
++    int len = 0;
++
++    *outPlain = NULL;
++    err = 1;
++
++    if ( genKey(&context, tokPBE, path, mech, arena, algid) == SVRCORE_Success ){
++        /* it seems that there is memory leak in that function: bug 400170 */
++        base = ATOB_AsciiToData(inCipher, (unsigned int*)&len);
++        if ( base != NULL ){
++            if ( decryptPassword(context, base, &plain, len) == SVRCORE_Success ){
++                *outPlain = plain;
++                err = 0;
++            }
++        }
++    }
++
++    slapi_ch_free_string(&algid);
++    PORT_Free(base);
++    PORT_FreeArena(arena, PR_TRUE);
++    freePBE(context);
++
++    return(err);
++}
++
++static void
++freePBE(struct pk11ContextStore *store)
++{
++    if (store){
++        if (store->slot)
++            slapd_pk11_freeSlot(store->slot);
++        if (store->key)
++            slapd_pk11_freeSymKey(store->key);
++        if (store->params)
++            SECITEM_FreeItem(store->params, PR_TRUE);
++        slapi_ch_free((void **)&store->crypt);
++        slapi_ch_free_string(&store->algid_base64);
++        slapi_ch_free((void **)&store);
++    }
++}
++
++static SVRCOREError
++genKey(struct pk11ContextStore **out, const char *token, char *path, int mech, PRArenaPool *arena, char *alg)
++{
++    SVRCOREError err = SVRCORE_Success;
++    struct pk11ContextStore *store = NULL;
++    SECItem *pwitem = NULL;
++    SECItem *result = NULL;
++    SECItem *salt = NULL;
++    SECItem der_algid;
++    SECAlgorithmID *algid = NULL;
++    SECOidTag algoid;
++    CK_MECHANISM pbeMech;
++    CK_MECHANISM cryptoMech;
++    SECAlgorithmID my_algid;
++    char *configdir = NULL;
++    char *der_ascii = NULL;
++    char *iv = NULL;
++    int free_it = 0;
++
++    arena = PORT_NewArena(DER_DEFAULT_CHUNKSIZE);
++
++    store = (struct pk11ContextStore*)slapi_ch_calloc(1, sizeof(*store));
++    if (store == NULL){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    *out = store;
++
++    /* Use the tokenName to find a PKCS11 slot */
++    store->slot = slapd_pk11_findSlotByName((char *)token);
++    if (store->slot == NULL){
++        err = SVRCORE_NoSuchToken_Error;
++        goto done;
++    }
++
++    /* Generate a key and parameters to do the encryption */
++    if(mech == AES_MECH){
++        store->mech = &AESmech;
++        algoid = SEC_OID_AES_256_CBC;
++    } else {
++        store->mech = &DESmech;
++        algoid = SEC_OID_PKCS5_PBE_WITH_MD2_AND_DES_CBC;
++    }
++
++    /* Generate a unique id, used as salt for the key generation */
++    if ( path == NULL ){
++        configdir = config_get_configdir();
++        if ( configdir == NULL ){
++            err = SVRCORE_System_Error;
++            goto done;
++        }
++    } else {
++        configdir = slapi_ch_strdup(path);
++    }
++    if ( slapi_uniqueIDGenerateFromNameString (&iv, NULL, configdir, strlen(configdir)) != UID_SUCCESS ){
++        err = SVRCORE_System_Error;
++        goto done;
++    }
++
++    pwitem = (SECItem *) PORT_Alloc(sizeof(SECItem));
++    if (pwitem == NULL){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    pwitem->type = siBuffer;
++    pwitem->data = (unsigned char *)PORT_Alloc(strlen(iv)+1);
++    if (pwitem->data == NULL){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    strcpy((char*)pwitem->data, iv);
++    pwitem->len = strlen(iv) + 1;
++
++    salt = (SECItem *) PORT_Alloc(sizeof(SECItem));
++    if (salt == NULL){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    salt->type = siBuffer;
++    salt->data = (unsigned char *)PORT_Alloc(strlen(iv)+1);
++    if ( salt->data == NULL ){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    strcpy((char*)salt->data, iv);        
++    salt->len = strlen(iv) + 1;
++
++    PORT_Memset(&der_algid, 0, sizeof(der_algid));
++    if(!alg){
++    	/*
++    	 * This is DES, or we are encoding AES - the process is the same.
++    	 */
++    	algid = slapd_pk11_createPBEAlgorithmID(algoid, 2, salt);
++    	free_it = 1; /* we need to free this algid */
++
++    	/*
++    	 * The following is only need for AES - we need to store
++    	 * algid for future decodings(unlike with DES).  So convert
++    	 * algid to its DER encoding.  Then convert the DER to ascii,
++    	 * and finally convert the DER ascii to base64 so we can store
++    	 * it in the cipher prefix.
++    	 */
++    	SEC_ASN1EncodeItem(arena, &der_algid, algid, SEC_ASN1_GET(SECOID_AlgorithmIDTemplate));
++    	der_ascii = BTOA_ConvertItemToAscii(&der_algid);
++    	store->algid_base64 = PL_Base64Encode(der_ascii,strlen(der_ascii), NULL);
++    	slapi_ch_free_string(&der_ascii);
++    } else {
++    	/*
++    	 * We are decoding AES - use the supplied algid
++    	 */
++    	PORT_Memset(&my_algid, 0, sizeof(my_algid));
++
++    	/* Decode the base64 der encoding */
++    	der_ascii =  PL_Base64Decode(alg, strlen(alg), NULL);
++
++    	/* convert the der ascii to the SEC item */
++    	ATOB_ConvertAsciiToItem(&der_algid, der_ascii);
++    	SEC_ASN1DecodeItem(arena, &my_algid, SEC_ASN1_GET(SECOID_AlgorithmIDTemplate), &der_algid);
++    	SECITEM_FreeItem(&der_algid, PR_FALSE);
++    	algid = &my_algid;
++    	slapi_ch_free_string(&der_ascii);
++    }
++
++    slapi_lock_mutex(pbe_lock);
++    store->key = slapd_pk11_pbeKeyGen(store->slot, algid, pwitem, 0, 0);
++    if (store->key == 0){
++        slapi_unlock_mutex(pbe_lock);
++        err = SVRCORE_System_Error;
++        goto done;
++    }
++
++    slapi_unlock_mutex(pbe_lock);
++
++    if(mech == AES_MECH)
++    {
++        cryptoMech.mechanism = PK11_GetPBECryptoMechanism(algid, &store->params, pwitem);
++        if (cryptoMech.mechanism == CKM_INVALID_MECHANISM) {
++            err = SVRCORE_System_Error;
++            goto done;
++        }
++    }
++    else
++    {
++        /* DES */
++        pbeMech.mechanism = slapd_pk11_algtagToMechanism(algoid);
++        result = slapd_pk11_paramFromAlgid(algid);
++        if(result){
++            pbeMech.pParameter = result->data;
++            pbeMech.ulParameterLen = result->len;
++        }
++        if(slapd_pk11_mapPBEMechanismToCryptoMechanism(&pbeMech, &cryptoMech, pwitem,
++                            PR_FALSE) != CKR_OK){
++            err = SVRCORE_System_Error;
++            goto done;
++        }
++
++        store->params = (SECItem *) PORT_Alloc(sizeof(SECItem));
++        if (store->params == NULL){
++            err = SVRCORE_System_Error;
++            goto done;
++        }
++        store->params->type = store->mech->type;
++        store->params->data = (unsigned char *)PORT_Alloc(cryptoMech.ulParameterLen);
++        if (store->params->data == NULL){
++            err = SVRCORE_System_Error;
++            goto done;
++        }
++        memcpy(store->params->data, (unsigned char *)cryptoMech.pParameter, cryptoMech.ulParameterLen);
++        store->params->len = cryptoMech.ulParameterLen;
++        PORT_Free(cryptoMech.pParameter);
++    }
++
++done:
++    SECITEM_FreeItem(result, PR_TRUE);
++    SECITEM_FreeItem(pwitem, PR_TRUE);
++    SECITEM_FreeItem(salt, PR_TRUE);
++    if(free_it){
++    	secoid_destroyAlgorithmID(algid, PR_TRUE);
++    }
++    slapi_ch_free_string(&configdir);
++    slapi_ch_free_string(&iv);
++    if (arena) {
++        PORT_FreeArena(arena, PR_TRUE);
++    }
++    return (err);
++}
++
++static SVRCOREError
++decryptPassword(struct pk11ContextStore *store, unsigned char *cipher, char **out, int len)
++{
++    SVRCOREError err = SVRCORE_Success;
++    unsigned char *plain = NULL;
++    unsigned char *cipher_with_padding = NULL;
++    SECStatus rv;
++    PK11Context *ctx = NULL;
++    int outLen = 0;
++    int blocksize = 0;
++
++    blocksize = slapd_pk11_getBlockSize(store->mech->type, 0);
++    store->length = len;
++
++    /*
++     * store->length is the max. length of the returned clear text -
++     * must be >= length of crypted bytes - also must be a multiple
++     * of blocksize
++     */
++    if (blocksize != 0){
++        store->length += blocksize - (store->length % blocksize);
++    }
++
++    /* plain will hold the returned clear text */
++    plain = (unsigned char *)slapi_ch_calloc(sizeof(unsigned char),
++                                             store->length+1);
++    if (!plain){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++
++    /*
++     * create a buffer holding the original cipher bytes, padded with
++     * zeros to a multiple of blocksize - do not need +1 since buffer is not
++     * a string
++     */
++    cipher_with_padding = (unsigned char *)slapi_ch_calloc(sizeof(unsigned char),
++                                                           store->length);
++    if (!cipher_with_padding){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    memcpy(cipher_with_padding, cipher, len);
++
++    ctx = slapd_pk11_createContextBySymKey(store->mech->type, CKA_DECRYPT,
++      store->key, store->params);
++    if (!ctx) {
++        err = SVRCORE_System_Error;
++        goto done;
++    }
++
++    /*
++     * Warning - there is a purify UMR in the NSS des code - you may see it when the
++     * password is not a multiple of 8 bytes long
++     */
++    rv = slapd_pk11_cipherOp(ctx, plain, &outLen, store->length,
++            cipher_with_padding, store->length);
++    if (rv){
++        err = SVRCORE_System_Error;
++    }
++
++    rv = slapd_pk11_finalize(ctx);
++    /*
++     * We must do the finalize, but we only want to set the err return
++     * code if it is not already set
++     */
++    if (rv && (SVRCORE_Success == err))
++        err = SVRCORE_System_Error;
++
++done:
++    if (err == SVRCORE_Success){
++        *out = (char *)plain;
++    } else {
++        slapi_ch_free((void **)&plain);
++    }
++
++    slapi_ch_free((void **)&cipher_with_padding);
++    /* We should free the PK11Context... Something like : */
++    if (ctx){
++        slapd_pk11_destroyContext(ctx, PR_TRUE);
++    }
++
++    return err;
++}
++
++static SVRCOREError
++cryptPassword(struct pk11ContextStore *store, char * clear, unsigned char **out)
++{
++    SVRCOREError err = SVRCORE_Success;
++    SECStatus rv;
++    PK11Context *ctx = NULL;
++    unsigned char *clear_with_padding = NULL; /* clear with padding up to blocksize */
++    int blocksize = 0;
++    int outLen = 0;
++
++    blocksize = slapd_pk11_getBlockSize(store->mech->type, 0);
++    store->length = strlen(clear);
++
++    /*
++     * The size of the clear text buffer passed to the encryption functions
++     * must be a multiple of blocksize (usually 8 bytes) - we allocate a buffer
++     * of this size, copy the clear text password into it, and pad the rest with
++     * zeros.
++     */
++    if (blocksize != 0){
++        store->length += blocksize - (store->length % blocksize);
++    }
++
++    /*
++     * store->crypt will hold the crypted password - it must be >= clear length
++     * store->crypt is freed in NSS; let's not use slapi_ch_calloc
++     */
++    store->crypt = (unsigned char *)calloc(sizeof(unsigned char),
++                                                    store->length+1);
++    if (!store->crypt) {
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++
++    /* Create a buffer big enough to hold the clear text password and padding */
++    clear_with_padding = (unsigned char *)slapi_ch_calloc(sizeof(unsigned char),
++                                                          store->length+1);
++    if (!clear_with_padding){
++        err = SVRCORE_NoMemory_Error;
++        goto done;
++    }
++    /*
++     * Copy the clear text password into the buffer - the calloc insures the
++     * remainder is zero padded .
++     */
++    strcpy((char *)clear_with_padding, clear);
++
++    ctx = slapd_pk11_createContextBySymKey(store->mech->type, CKA_ENCRYPT,
++      store->key, store->params);
++    if (!ctx) {
++        err = SVRCORE_System_Error;
++        goto done;
++    }
++
++    rv = slapd_pk11_cipherOp(ctx, store->crypt, &outLen, store->length,
++            clear_with_padding, store->length);
++    if (rv) {
++        err = SVRCORE_System_Error;
++    }
++
++    rv = slapd_pk11_finalize(ctx);
++    /*
++     * We must do the finalize, but we only want to set the err return
++     * code if it is not already set
++     */
++    if (rv && (SVRCORE_Success == err)){
++        err = SVRCORE_System_Error;
++    }
++
++done:
++    if (err == SVRCORE_Success){
++        *out = store->crypt;
++    }
++
++    slapi_ch_free((void **)&clear_with_padding);
++    /* We should free the PK11Context... Something like : */
++    if (ctx){
++        slapd_pk11_destroyContext(ctx, PR_TRUE);
++    }
++
++    return err;
++}
++
++/*
++ * The UUID name based generator was broken on x86 platforms.  We use
++ * this to generate the password encryption key.  During migration,
++ * we have to fix this so we can use the fixed generator.  The env.
++ * var USE_BROKEN_UUID tells the uuid generator to use the old
++ * broken method to create the UUID.  That will allow us to decrypt
++ * the password to the correct clear text, then we can turn off
++ * the broken method and use the fixed method to encrypt the
++ * password.
++ */
++char *
++migrateCredentials(char *oldpath, char *newpath, char *oldcred)
++{
++    static char *useBrokenUUID = "USE_BROKEN_UUID=1";
++    static char *disableBrokenUUID = "USE_BROKEN_UUID=0";
++    char *plain = NULL;
++    char *cipher = NULL;
++
++    init_pbe_plugin();
++
++    slapd_pk11_configurePKCS11(NULL, NULL, tokPBE, ptokPBE, NULL, NULL, NULL, NULL, 0, 0 );
++    NSS_NoDB_Init(NULL);
++
++    if (getenv("MIGRATE_BROKEN_PWD")) {
++        putenv(useBrokenUUID);
++    }
++
++    if ( decode_path(oldcred, &plain, oldpath, DES_MECH, NULL) == 0 ){
++        if (getenv("MIGRATE_BROKEN_PWD")) {
++            putenv(disableBrokenUUID);
++        }
++        if ( encode_path(plain, &cipher, newpath, AES_MECH) != 0 ){
++            return(NULL);
++        } else {
++            return(cipher);
++        }
++    } else {
++        return(NULL);
++    }
++}
+diff --git a/ldap/servers/plugins/rever/rever.c b/ldap/servers/plugins/rever/rever.c
+index 9d7e82d..51d602f 100644
+--- a/ldap/servers/plugins/rever/rever.c
++++ b/ldap/servers/plugins/rever/rever.c
+@@ -43,25 +43,92 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <sys/types.h>
+-
+ #include "rever.h"
+ 
+-static Slapi_PluginDesc pdesc = { "des-storage-scheme", VENDOR, DS_PACKAGE_VERSION, "DES storage scheme plugin" };
++static Slapi_PluginDesc pdesc_aes = { "aes-storage-scheme", VENDOR, DS_PACKAGE_VERSION, "AES storage scheme plugin" };
++static Slapi_PluginDesc pdesc_des = { "des-storage-scheme", VENDOR, DS_PACKAGE_VERSION, "DES storage scheme plugin" };
++
+ 
+ static char *plugin_name = "ReverStoragePlugin";
+ 
++#define AES_MECH 1
++#define DES_MECH 2
++
++int
++aes_cmp( char *userpwd, char *dbpwd )
++{
++	char *cipher = NULL;
++	int rc = 0;
++
++	if ( encode(userpwd, &cipher, AES_MECH) != 0 ){
++		rc = 1;
++	} else {
++		rc = strcmp(cipher, dbpwd);
++	}
++	slapi_ch_free_string(&cipher);
++
++	return rc;
++}
++
++char *
++aes_enc( char *pwd )
++{
++	char *cipher = NULL;
++
++	if ( encode(pwd, &cipher, AES_MECH) != 0 ){
++		return(NULL);
++	} else {
++		return( cipher );
++	}
++}
++
++char *
++aes_dec( char *pwd, char *alg )
++{
++	char *plain = NULL;
++
++	if ( decode(pwd, &plain, AES_MECH, alg) != 0 ){
++		return(NULL);
++	} else {
++		return( plain );
++	}
++}
++
++int
++aes_init( Slapi_PBlock *pb)
++{
++       char *name = slapi_ch_strdup(AES_REVER_SCHEME_NAME);
++       int rc;
++
++       slapi_log_error( SLAPI_LOG_PLUGIN, plugin_name, "=> aes_init\n" );
++
++       rc = slapi_pblock_set( pb, SLAPI_PLUGIN_VERSION, (void *) SLAPI_PLUGIN_VERSION_01 );
++       rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&pdesc_aes );
++       rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_ENC_FN, (void *) aes_enc);
++       rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_CMP_FN, (void *) aes_cmp );
++       rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_DEC_FN, (void *) aes_dec );
++       rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_NAME, name );
++
++       init_pbe_plugin();
++
++       slapi_log_error( SLAPI_LOG_PLUGIN, plugin_name, "<= aes_init %d\n", rc );
++
++       return( rc );
++}
++
+ int
+ des_cmp( char *userpwd, char *dbpwd )
+ {
+ 	char *cipher = NULL;
+ 	int rc = 0;
+ 
+-	if ( encode(userpwd, &cipher) != 0 )
++	if ( encode(userpwd, &cipher, DES_MECH) != 0 ){
+ 		rc = 1;
+-	else
++	} else {
+ 		rc = strcmp(cipher, dbpwd);
++	}
++	slapi_ch_free_string(&cipher);
+ 
+-	slapi_ch_free((void**)&cipher);
+ 	return rc;
+ }
+ 
+@@ -70,10 +137,11 @@ des_enc( char *pwd )
+ {
+ 	char *cipher = NULL;
+ 	
+-	if ( encode(pwd, &cipher) != 0 )
++	if ( encode(pwd, &cipher, DES_MECH ) != 0 ){
+ 		return(NULL);
+-	else
++	} else {
+ 		return( cipher );
++	}
+ }
+ 
+ char *
+@@ -81,37 +149,31 @@ des_dec( char *pwd )
+ {
+ 	char *plain = NULL;
+ 	
+-	if ( decode(pwd, &plain) != 0 )
++	if ( decode(pwd, &plain, DES_MECH, NULL) != 0 ){
+ 		return(NULL);
+-	else
++	} else {
+ 		return( plain );
++	}
+ }
+ 
+ int
+ des_init( Slapi_PBlock *pb )
+ {
++	char *name = slapi_ch_strdup(DES_REVER_SCHEME_NAME);
+ 	int	rc;
+-	char *name;
+ 
+ 	slapi_log_error( SLAPI_LOG_PLUGIN, plugin_name, "=> des_init\n" );
+ 
+-	rc = slapi_pblock_set( pb, SLAPI_PLUGIN_VERSION,
+-	    (void *) SLAPI_PLUGIN_VERSION_01 );
+-	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_DESCRIPTION,
+-	    (void *)&pdesc );
+-	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_ENC_FN,
+-	    (void *) des_enc);
+-	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_CMP_FN,
+-	    (void *) des_cmp );
+-	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_DEC_FN,
+-	    (void *) des_dec );
+-	name = slapi_ch_strdup(REVER_SCHEME_NAME);
+-	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_NAME,
+-	    name );
+-
+-	init_des_plugin();
+-
+-	slapi_log_error( SLAPI_LOG_PLUGIN, plugin_name, "<= des_init %d\n\n", rc );
++	rc = slapi_pblock_set( pb, SLAPI_PLUGIN_VERSION, (void *) SLAPI_PLUGIN_VERSION_01 );
++	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_DESCRIPTION, (void *)&pdesc_des );
++	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_ENC_FN, (void *) des_enc);
++	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_CMP_FN, (void *) des_cmp );
++	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_DEC_FN, (void *) des_dec );
++	rc |= slapi_pblock_set( pb, SLAPI_PLUGIN_PWD_STORAGE_SCHEME_NAME, name );
++
++	init_pbe_plugin();
++
++	slapi_log_error( SLAPI_LOG_PLUGIN, plugin_name, "<= des_init %d\n", rc );
+ 
+ 	return( rc );
+ }
+diff --git a/ldap/servers/plugins/rever/rever.h b/ldap/servers/plugins/rever/rever.h
+index 8ea6279..9edddd8 100644
+--- a/ldap/servers/plugins/rever/rever.h
++++ b/ldap/servers/plugins/rever/rever.h
+@@ -49,7 +49,10 @@
+ #include "slap.h"
+ #include "ldaplog.h"
+ 
+-#define REVER_SCHEME_NAME	"DES"
++#define AES_MECH 1
++#define DES_MECH 2
++#define AES_REVER_SCHEME_NAME	"AES"
++#define DES_REVER_SCHEME_NAME	"DES"
+ #define PWD_HASH_PREFIX_START   '{'
+ #define PWD_HASH_PREFIX_END '}'
+ 
+@@ -58,10 +61,10 @@ int rever_cmp( char *userpwd, char *dbpwd );
+ char *rever_enc( char *pwd );
+ char *rever_dec( char *pwd );
+ int rever_init( Slapi_PBlock *pb );
+-void init_des_plugin();
++void init_pbe_plugin();
+ 
+-int encode(char *inPlain, char ** outCipher);
+-int decode(char *inCipher, char **outPlain);
++int encode(char *inPlain, char **outCipher, int mech);
++int decode(char *inCipher, char **outPlain, int mech, char *algid);
+ 
+ char *migrateCredentials(char *oldpath, char *newpath, char *oldcred);
+ typedef char *(*migrate_fn_type)(char *, char *, char *);
+diff --git a/ldap/servers/slapd/daemon.c b/ldap/servers/slapd/daemon.c
+index b34358d..56d150e 100644
+--- a/ldap/servers/slapd/daemon.c
++++ b/ldap/servers/slapd/daemon.c
+@@ -933,6 +933,155 @@ handle_listeners(Connection_Table *ct, listener_info *listener_idxs, int n_liste
+ 	return;
+ }
+ 
++/*
++ * Convert any pre-existing DES passwords to AES.
++ *
++ * Grab the "password" attributes and search all the backends for
++ * these attributes and convert them to AES if they are DES encoded.
++ */
++static void
++convert_pbe_des_to_aes()
++{
++    Slapi_PBlock *pb = NULL;
++    Slapi_Entry **entries = NULL;
++    struct slapdplugin *plugin = NULL;
++    char **attrs = NULL;
++    char *val = NULL;
++    int converted_des_passwd = 0;
++    int result = -1;
++    int have_aes = 0;
++    int have_des = 0;
++    int i = 0, ii = 0;
++
++    /*
++     * Check that AES plugin is enabled, and grab all the unique
++     * password attributes.
++     */
++    for ( plugin = get_plugin_list(PLUGIN_LIST_REVER_PWD_STORAGE_SCHEME);
++          plugin != NULL;
++          plugin = plugin->plg_next )
++    {
++        char *arg = NULL;
++
++        if(strcasecmp(plugin->plg_name, "AES") == 0){
++            /* We have the AES plugin, and its enabled */
++            have_aes = 1;
++        }
++        if(strcasecmp(plugin->plg_name, "DES") == 0){
++            /* We have the DES plugin, and its enabled */
++            have_des = 1;
++        }
++        /* Gather all the unique password attributes from all the PBE plugins */
++        for ( i = 0, arg = plugin->plg_argv[i];
++              i < plugin->plg_argc;
++              arg = plugin->plg_argv[++i] )
++        {
++            if(charray_inlist(attrs, arg)){
++                continue;
++            }
++            charray_add(&attrs, slapi_ch_strdup(arg));
++        }
++    }
++
++    if(have_aes && have_des){
++        /*
++         * Find any entries in cn=config that contain DES passwords and convert
++         * them to AES
++         */
++        slapi_log_error(SLAPI_LOG_HOUSE,  "convert_pbe_des_to_aes",
++                "Converting DES passwords to AES...\n");
++
++        for (i = 0; attrs && attrs[i]; i++){
++            char *filter = PR_smprintf("%s=*", attrs[i]);
++
++            pb = slapi_pblock_new();
++            slapi_search_internal_set_pb(pb, "cn=config",
++                LDAP_SCOPE_SUBTREE, filter, NULL, 0, NULL, NULL,
++                (void *)plugin_get_default_component_id(),
++                SLAPI_OP_FLAG_IGNORE_UNINDEXED);
++            slapi_search_internal_pb(pb);
++            slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_SEARCH_ENTRIES, &entries);
++            for (ii = 0; entries && entries[ii]; ii++){
++                if((val = slapi_entry_attr_get_charptr(entries[ii], attrs[i]))){
++                    if(strlen(val) >= 5 && strncmp(val,"{DES}", 5) == 0){
++                        /*
++                         * We have a DES encoded password, convert it to AES
++                         */
++                        Slapi_PBlock *mod_pb = NULL;
++                        Slapi_Value *sval = NULL;
++                        LDAPMod mod_replace;
++                        LDAPMod *mods[2];
++                        char *replace_val[2];
++                        char *passwd = NULL;
++                        int rc = 0;
++
++                        /* decode the DES password */
++                        if(pw_rever_decode(val, &passwd, attrs[i]) == -1){
++                            slapi_log_error(SLAPI_LOG_FATAL ,"convert_pbe_des_to_aes",
++                                    "Failed to decode existing DES password for (%s)\n",
++                                    slapi_entry_get_dn(entries[ii]));
++                            rc = -1;
++                        }
++
++                        /* encode the password */
++                        if (rc == 0){
++                            sval = slapi_value_new_string(passwd);
++                            if(pw_rever_encode(&sval, attrs[i]) == -1){
++                                slapi_log_error(SLAPI_LOG_FATAL, "convert_pbe_des_to_aes",
++                                        "failed to encode AES password for (%s)\n",
++                                        slapi_entry_get_dn(entries[ii]));
++                                rc = -1;
++                            }
++                        }
++
++                        if (rc == 0){
++                            /* replace the attribute in the entry */
++                            replace_val[0] = (char *)slapi_value_get_string(sval);
++                            replace_val[1] = NULL;
++                            mod_replace.mod_op = LDAP_MOD_REPLACE;
++                            mod_replace.mod_type = attrs[i];
++                            mod_replace.mod_values = replace_val;
++                            mods[0] = &mod_replace;
++                            mods[1] = 0;
++
++                            mod_pb = slapi_pblock_new();
++                            slapi_modify_internal_set_pb(mod_pb, slapi_entry_get_dn(entries[ii]),
++                                    mods, 0, 0, (void *)plugin_get_default_component_id(), 0);
++                            slapi_modify_internal_pb(mod_pb);
++
++                            slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &result);
++                            if (LDAP_SUCCESS != result) {
++                                slapi_log_error(SLAPI_LOG_FATAL, "convert_pbe_des_to_aes"
++                                        "Failed to convert password for (%s) error (%d)\n",
++                                        slapi_entry_get_dn(entries[ii]), result);
++                            } else {
++                                slapi_log_error(SLAPI_LOG_HOUSE, "convert_pbe_des_to_aes",
++                                        "Successfully converted password for (%s)\n",
++                                         slapi_entry_get_dn(entries[ii]));
++                                converted_des_passwd = 1;
++                            }
++                        }
++                        slapi_ch_free_string(&passwd);
++                        slapi_value_free(&sval);
++                        slapi_pblock_destroy(mod_pb);
++                    }
++                    slapi_ch_free_string(&val);
++                }
++            }
++            slapi_free_search_results_internal(pb);
++            slapi_pblock_destroy(pb);
++            pb = NULL;
++            slapi_ch_free_string(&filter);
++        }
++
++        if (!converted_des_passwd){
++            slapi_log_error(SLAPI_LOG_HOUSE, "convert_pbe_des_to_aes",
++                "No DES passwords found to convert.\n");
++        }
++    }
++    charray_free(attrs);
++}
++
+ void slapd_daemon( daemon_ports_t *ports )
+ {
+ 	/* We are passed some ports---one for regular connections, one
+@@ -1137,11 +1286,15 @@ void slapd_daemon( daemon_ports_t *ports )
+ 	}
+ #endif /* ENABLE_LDAPI */
+ #endif
+-
+ 	listener_idxs = (listener_info *)slapi_ch_calloc(n_listeners, sizeof(*listener_idxs));
+ 	/* Now we write the pid file, indicating that the server is finally and listening for connections */
+ 	write_pid_file();
+ 
++	/*
++	 * Convert old DES encoded passwords to AES
++	 */
++	convert_pbe_des_to_aes();
++
+ 	/* The meat of the operation is in a loop on a call to select */
+ 	while(!g_get_shutdown())
+ 	{
+diff --git a/ldap/servers/slapd/proto-slap.h b/ldap/servers/slapd/proto-slap.h
+index 3b00c80..b1e7474 100644
+--- a/ldap/servers/slapd/proto-slap.h
++++ b/ldap/servers/slapd/proto-slap.h
+@@ -1083,6 +1083,7 @@ void slapd_pk11_DestroyPublicKey(SECKEYPublicKey *key);
+ PRBool slapd_pk11_DoesMechanism(PK11SlotInfo *slot, CK_MECHANISM_TYPE type);
+ PK11SymKey *slapd_pk11_PubUnwrapSymKeyWithFlagsPerm(SECKEYPrivateKey *wrappingKey, SECItem *wrappedKey, CK_MECHANISM_TYPE target, CK_ATTRIBUTE_TYPE operation, int keySize, CK_FLAGS flags, PRBool isPerm);
+ PK11SymKey *slapd_pk11_TokenKeyGenWithFlags(PK11SlotInfo *slot, CK_MECHANISM_TYPE type, SECItem *param, int keySize, SECItem *keyid, CK_FLAGS opFlags, PK11AttrFlags attrFlags, void *wincx);
++CK_MECHANISM_TYPE slapd_PK11_GetPBECryptoMechanism(SECAlgorithmID *algid, SECItem **params, SECItem *pwitem);
+ 
+ /*
+  * start_tls_extop.c
+diff --git a/ldap/servers/slapd/pw.c b/ldap/servers/slapd/pw.c
+index ab624e7..d5785ba 100644
+--- a/ldap/servers/slapd/pw.c
++++ b/ldap/servers/slapd/pw.c
+@@ -385,9 +385,8 @@ pw_encodevals_ext( Slapi_PBlock *pb, const Slapi_DN *sdn, Slapi_Value **vals )
+ 		if ((!enc) && (( enc = (*pws_enc)( (char*)slapi_value_get_string(vals[ i ]) )) == NULL )) {
+ 			return( -1 );
+ 		}
+-
+-                slapi_value_free(&vals[ i ]);
+-                vals[ i ] = slapi_value_new_string_passin(enc);
++		slapi_value_free(&vals[ i ]);
++		vals[ i ] = slapi_value_new_string_passin(enc);
+ 	}
+ 
+ 	return( 0 );
+@@ -397,28 +396,57 @@ pw_encodevals_ext( Slapi_PBlock *pb, const Slapi_DN *sdn, Slapi_Value **vals )
+  * Check if the prefix of the cipher is the one that is supposed to be 
+  * Extract from the whole cipher the encrypted password (remove the prefix)
+  */
+-int checkPrefix(char *cipher, char *schemaName, char **encrypt)
++int checkPrefix(char *cipher, char *schemaName, char **encrypt, char **algid)
+ {
+ 	int namelen;
+ 	/* buf contains the extracted schema name */
+ 	char *end, buf[ 3*PWD_MAX_NAME_LEN + 1 ];
++	char *delim = NULL;
+ 
+ 	if ( (*cipher == PWD_HASH_PREFIX_START) &&
+-		 ((end = strchr(cipher, PWD_HASH_PREFIX_END)) != NULL) &&
+-		 ((namelen = end - cipher - 1 ) <= (3*PWD_MAX_NAME_LEN)) )
++		 (end = strchr(cipher, PWD_HASH_PREFIX_END)) != NULL)
+ 	{
+-		memcpy( buf, cipher + 1, namelen );
+-		buf[ namelen ] = '\0';
+-		if ( strcasecmp( buf, schemaName) != 0 )
+-		{
+-			/* schema names are different, error */
+-			return 1;
+-		}
+-		else
+-		{
+-			/* extract the encrypted password */
+-			*encrypt = cipher + strlen(schemaName) + 2;
+-			return 0;
++		if((delim = strchr(cipher, PWD_PBE_DELIM)) != NULL){
++			/*
++			 * We have an algid in the prefix:
++			 *
++			 * {AES-<BASE64_ALG_ID>}<ENCODED PASSWORD>
++			 */
++			if((namelen = delim - cipher - 1) <= (3*PWD_MAX_NAME_LEN)){
++				memcpy( buf, cipher + 1, namelen );
++				buf[ namelen ] = '\0';
++
++				if ( strcasecmp( buf, schemaName) != 0 ){
++					/* schema names are different, error */
++					return 1;
++				} else {
++					char algid_buf[256];
++
++					/* extract the algid (length is never greater than 216 */
++					memcpy(algid_buf, delim + 1 , (end - delim));
++					algid_buf[end - delim - 1] = '\0';
++					*algid = strdup(algid_buf);
++
++					/* extract the encrypted password */
++					*encrypt = cipher + strlen(*algid) + strlen (schemaName) + 3;
++					return 0;
++				}
++			}
++		} else if ((namelen = end - cipher - 1 ) <= (3*PWD_MAX_NAME_LEN)){
++			/* no delimiter - must be old school DES */
++			memcpy( buf, cipher + 1, namelen );
++			buf[ namelen ] = '\0';
++			if ( strcasecmp( buf, schemaName) != 0 )
++			{
++				/* schema names are different, error */
++				return 1;
++			}
++			else
++			{
++				/* extract the encrypted password */
++				*encrypt = cipher + strlen(schemaName) + 2;
++				return 0;
++			}
+ 		}
+ 	}
+ 	/* cipher is not prefixed, already in clear ? */
+@@ -444,6 +472,7 @@ pw_rever_decode(char *cipher, char **plain, const char * attr_name)
+ 		char *L_attr = NULL;
+ 		int i = 0;
+ 		char *encrypt = NULL;
++		char *algid = NULL;
+ 		int prefixOK = -1;
+ 
+ 		/* Get the appropriate decoding function */
+@@ -451,10 +480,9 @@ pw_rever_decode(char *cipher, char **plain, const char * attr_name)
+ 		{
+ 			if (slapi_attr_types_equivalent(L_attr, attr_name))
+ 			{
+-				typedef char * (*ENCFP)(char *);
++				typedef char * (*ENCFP)(char *, char *);
+ 
+ 				pwsp =  (struct pw_scheme *) slapi_ch_calloc (1, sizeof(struct pw_scheme));
+-
+ 				pwsp->pws_dec = (ENCFP)p->plg_pwdstorageschemedec;
+ 				pwsp->pws_name = slapi_ch_strdup( p->plg_pwdstorageschemename );
+ 				pwsp->pws_len = strlen(pwsp->pws_name) ;
+@@ -462,7 +490,7 @@ pw_rever_decode(char *cipher, char **plain, const char * attr_name)
+ 				{
+ 					/* check that the prefix of the cipher is the same name
+ 						as the scheme name */
+-					prefixOK = checkPrefix(cipher, pwsp->pws_name, &encrypt);
++					prefixOK = checkPrefix(cipher, pwsp->pws_name, &encrypt, &algid);
+ 					if ( prefixOK == -1 )
+ 					{
+ 						/* no prefix, already in clear ? */
+@@ -472,13 +500,15 @@ pw_rever_decode(char *cipher, char **plain, const char * attr_name)
+ 					}
+ 					else if ( prefixOK == 1 )
+ 					{
+-						/* scheme names are different */
++						/* scheme names are different, try the next plugin */
+ 						ret_code = -1;
+-						goto free_and_return;
++						free_pw_scheme( pwsp );
++						pwsp = NULL;
++						continue;
+ 					}
+ 					else
+ 					{
+-						if ( ( *plain = (pwsp->pws_dec)( encrypt )) == NULL ) 
++						if ( ( *plain = (pwsp->pws_dec)( encrypt, algid )) == NULL )
+ 						{
+ 							/* pb during decoding */
+ 							ret_code = -1;
+@@ -519,10 +549,10 @@ pw_rever_encode(Slapi_Value **vals, char * attr_name)
+ 	for ( p = get_plugin_list(PLUGIN_LIST_REVER_PWD_STORAGE_SCHEME); p != NULL; p = p->plg_next )
+ 	{
+ 		char *L_attr = NULL;
+-		int i = 0;
++		int i = 0, ii = 0;
+ 
+ 		/* Get the appropriate encoding function */
+-		for ( L_attr = p->plg_argv[i]; i<p->plg_argc; L_attr = p->plg_argv[++i] )
++		for ( L_attr = p->plg_argv[ii]; ii<p->plg_argc; L_attr = p->plg_argv[++ii] )
+ 		{
+ 			if (slapi_attr_types_equivalent(L_attr, attr_name))
+ 			{
+@@ -537,11 +567,13 @@ pw_rever_encode(Slapi_Value **vals, char * attr_name)
+ 					for ( i = 0; vals[i] != NULL; ++i ) 
+ 					{
+ 						char *encrypt = NULL;
++						char *algid = NULL;
+ 						int prefixOK;
+ 
+ 						prefixOK = checkPrefix((char*)slapi_value_get_string(vals[i]), 
+ 												pwsp->pws_name,
+-												&encrypt);
++												&encrypt, &algid);
++						slapi_ch_free_string(&algid);
+ 						if ( prefixOK == 0 )
+ 						{
+ 							/* Don't touch already encoded value */
+diff --git a/ldap/servers/slapd/pw.h b/ldap/servers/slapd/pw.h
+index 9bb5cc7..87d300c 100644
+--- a/ldap/servers/slapd/pw.h
++++ b/ldap/servers/slapd/pw.h
+@@ -55,35 +55,13 @@
+ #define PWD_HASH_PREFIX_END	'}'
+ 
+ /*
+- * 
+- * structure for holding password scheme info.
+- */
+-struct pw_scheme {
+-	/* case-insensitive name used in prefix of passwords that use scheme */
+-	char	*pws_name;
+-
+-	/* length of pws_name */
+-	int	pws_len;
+-
+-	/* thread-safe comparison function; returns 0 for positive matches */
+-	/* userpwd is value sent over LDAP bind; dbpwd is from the database */
+-	int	(*pws_cmp)( char *userpwd, char *dbpwd );
+-
+-	/* thread-safe encoding function (returns pointer to malloc'd string) */
+-	char	*(*pws_enc)( char *pwd );
+-
+-	/* thread-safe decoding function (returns pointer to malloc'd string) */
+-	char	*(*pws_dec)( char *pwd );
+-};
+-
+-/*
+  * Public functions from pw.c:
+  */
+ struct pw_scheme *pw_name2scheme( char *name );
+ struct pw_scheme *pw_val2scheme( char *val, char **valpwdp, int first_is_default );
+ int pw_encodevals( Slapi_Value **vals );
+ int pw_encodevals_ext( Slapi_PBlock *pb, const Slapi_DN *sdn, Slapi_Value **vals );
+-int checkPrefix(char *cipher, char *schemaName, char **encrypt);
++int checkPrefix(char *cipher, char *schemaName, char **encrypt, char **algid);
+ struct passwordpolicyarray *new_passwdPolicy ( Slapi_PBlock *pb, const char *dn );
+ void delete_passwdPolicy( struct passwordpolicyarray **pwpolicy);
+ int pw_is_pwp_admin(Slapi_PBlock *pb, struct passwordpolicyarray *pwp);
+diff --git a/ldap/servers/slapd/security_wrappers.c b/ldap/servers/slapd/security_wrappers.c
+index 33d512f..4ffda8b 100644
+--- a/ldap/servers/slapd/security_wrappers.c
++++ b/ldap/servers/slapd/security_wrappers.c
+@@ -409,3 +409,9 @@ PK11SymKey *slapd_pk11_TokenKeyGenWithFlags(PK11SlotInfo *slot,
+ 	return PK11_TokenKeyGenWithFlags(slot, type, param, keySize, keyid, 
+ 	                                 opFlags, attrFlags, wincx);
+ }
++
++CK_MECHANISM_TYPE
++slapd_PK11_GetPBECryptoMechanism(SECAlgorithmID *algid, SECItem **params, SECItem *pwitem)
++{
++	return PK11_GetPBECryptoMechanism(algid, params, pwitem );
++}
+diff --git a/ldap/servers/slapd/slap.h b/ldap/servers/slapd/slap.h
+index a84e802..c027a72 100644
+--- a/ldap/servers/slapd/slap.h
++++ b/ldap/servers/slapd/slap.h
+@@ -53,9 +53,9 @@
+ 
+  
+ /* Used by SSL and DES plugin */
+-#ifdef NEED_TOK_DES
+-static char  tokDes[34] = "Communicator Generic Crypto Svcs";
+-static char ptokDes[34] = "Internal (Software) Token        ";
++#ifdef NEED_TOK_PBE
++static char  tokPBE[34] = "Communicator Generic Crypto Svcs";
++static char ptokPBE[34] = "Internal (Software) Token        ";
+ #endif
+ 
+ /*
+@@ -306,6 +306,8 @@ typedef void	(*VFPV)(); /* takes undefined arguments */
+ 
+ #define ATTR_NETSCAPEMDSUFFIX "netscapemdsuffix"
+ 
++#define PWD_PBE_DELIM '-'
++
+ #define REFERRAL_REMOVE_CMD "remove"
+ 
+ /* Filenames for DSE storage */
+@@ -1517,6 +1519,60 @@ struct slapi_task {
+ } slapi_task;
+ /* End of interface to support online tasks **********************************/
+ 
++/*
++ * structure for holding password scheme info.
++ */
++struct pw_scheme {
++    /* case-insensitive name used in prefix of passwords that use scheme */
++   char    *pws_name;
++
++   /* length of pws_name */
++   int     pws_len;
++
++   /* thread-safe comparison function; returns 0 for positive matches */
++   /* userpwd is value sent over LDAP bind; dbpwd is from the database */
++   int     (*pws_cmp)( char *userpwd, char *dbpwd );
++
++   /* thread-safe encoding function (returns pointer to malloc'd string) */
++   char    *(*pws_enc)( char *pwd );
++
++   /* thread-safe decoding function (returns pointer to malloc'd string) */
++   char    *(*pws_dec)( char *pwd, char *algid);
++};
++
++typedef struct passwordpolicyarray {
++  slapi_onoff_t pw_change;        /* 1 - indicates that users are allowed to change the pwd */
++  slapi_onoff_t pw_must_change;   /* 1 - indicates that users must change pwd upon reset */
++  slapi_onoff_t pw_syntax;
++  int pw_minlength;
++  int pw_mindigits;
++  int pw_minalphas;
++  int pw_minuppers;
++  int pw_minlowers;
++  int pw_minspecials;
++  int pw_min8bit;
++  int pw_maxrepeats;
++  int pw_mincategories;
++  int pw_mintokenlength;
++  slapi_onoff_t pw_exp;
++  long pw_maxage;
++  long pw_minage;
++  long pw_warning;
++  slapi_onoff_t pw_history;
++  int pw_inhistory;
++  slapi_onoff_t pw_lockout;
++  int pw_maxfailure;
++  slapi_onoff_t pw_unlock;
++  long pw_lockduration;
++  long pw_resetfailurecount;
++  int pw_gracelimit;
++  slapi_onoff_t pw_is_legacy;
++  slapi_onoff_t pw_track_update_time;
++  struct pw_scheme *pw_storagescheme;
++  Slapi_DN *pw_admin;
++  Slapi_DN **pw_admin_user;
++} passwdPolicy;
++
+ typedef struct slapi_pblock {
+ 	/* common */
+ 	Slapi_Backend		*pb_backend;
+@@ -2060,39 +2116,6 @@ typedef struct _slapdEntryPoints {
+ 
+ #define MAX_ALLOWED_TIME_IN_SECS	2147483647
+ 
+-typedef struct passwordpolicyarray {
+-  int pw_change;        /* 1 - indicates that users are allowed to change the pwd */
+-  int pw_must_change;   /* 1 - indicates that users must change pwd upon reset */
+-  int pw_syntax;
+-  int pw_minlength;
+-  int pw_mindigits;
+-  int pw_minalphas;
+-  int pw_minuppers;
+-  int pw_minlowers;
+-  int pw_minspecials;
+-  int pw_min8bit;
+-  int pw_maxrepeats;
+-  int pw_mincategories;
+-  int pw_mintokenlength;
+-  int pw_exp;
+-  long pw_maxage;
+-  long pw_minage;
+-  long pw_warning;
+-  int pw_history;
+-  int pw_inhistory;
+-  int pw_lockout;
+-  int pw_maxfailure;
+-  int pw_unlock;
+-  long pw_lockduration;
+-  long pw_resetfailurecount;
+-  int pw_gracelimit;
+-  int pw_is_legacy;
+-  int pw_track_update_time;
+-  struct pw_scheme *pw_storagescheme;
+-  Slapi_DN *pw_admin;
+-  Slapi_DN **pw_admin_user;
+-} passwdPolicy;
+-
+ typedef struct _slapdFrontendConfig {
+   Slapi_RWLock     *cfg_rwlock;       /* read/write lock to serialize access */
+   struct pw_scheme *rootpwstoragescheme;
+diff --git a/ldap/servers/slapd/slapi-plugin.h b/ldap/servers/slapd/slapi-plugin.h
+index 912d407..c36822d 100644
+--- a/ldap/servers/slapd/slapi-plugin.h
++++ b/ldap/servers/slapd/slapi-plugin.h
+@@ -200,6 +200,8 @@ NSPR_API(PRUint32) PR_fprintf(struct PRFileDesc* fd, const char *fmt, ...)
+ #define SLAPI_OP_FLAG_NEVER_CHAIN	0x000800 /* Do not chain the operation */
+ #define SLAPI_OP_FLAG_NO_ACCESS_CHECK	0x10000 /* Do not check for access control - bypass them */
+ #define SLAPI_OP_FLAG_BYPASS_REFERRALS	0x40000 /* Useful for performing internal operations on read-only replica */
++#define SLAPI_OP_FLAG_NEVER_CACHE	0x200000 /* added entry should not be kept in cache */
++#define SLAPI_OP_FLAG_IGNORE_UNINDEXED		0x800000 /* Do not log unindexed search */
+ 
+ #define SLAPI_OC_FLAG_REQUIRED	0x0001
+ #define SLAPI_OC_FLAG_ALLOWED	0x0002
+diff --git a/ldap/servers/slapd/ssl.c b/ldap/servers/slapd/ssl.c
+index 529dbc6..1f64be0 100644
+--- a/ldap/servers/slapd/ssl.c
++++ b/ldap/servers/slapd/ssl.c
+@@ -63,7 +63,7 @@
+ #include <string.h>
+ #include <errno.h>
+ 
+-#define NEED_TOK_DES /* defines tokDes and ptokDes - see slap.h */
++#define NEED_TOK_PBE /* defines tokPBE and ptokPBE - see slap.h */
+ #include "slap.h"
+ 
+ #include "svrcore.h"
+@@ -713,7 +713,7 @@ slapd_nss_init(int init_ssl, int config_available)
+ 	/******** Initialise NSS *********/
+     
+ 	nssFlags &= (~NSS_INIT_READONLY);
+-	slapd_pk11_configurePKCS11(NULL, NULL, tokDes, ptokDes, NULL, NULL, NULL, NULL, 0, 0 );
++	slapd_pk11_configurePKCS11(NULL, NULL, tokPBE, ptokPBE, NULL, NULL, NULL, NULL, 0, 0 );
+ 	secStatus = NSS_Initialize(certdir, NULL, NULL, "secmod.db", nssFlags);
+ 
+ 	dongle_file_name = PR_smprintf("%s/pin.txt", certdir);
+diff --git a/ldap/servers/slapd/task.c b/ldap/servers/slapd/task.c
+index 0488640..e595ad0 100644
+--- a/ldap/servers/slapd/task.c
++++ b/ldap/servers/slapd/task.c
+@@ -75,6 +75,7 @@ static int shutting_down = 0;
+ #define TASK_WORK_NAME          "nsTaskTotalItems"
+ 
+ #define DEFAULT_TTL     "120"   /* seconds */
++#define TASK_DES2AES "des2aes task"
+ 
+ #define LOG_BUFFER              256
+ /* if the cumul. log gets larger than this, it's truncated: */
+@@ -105,6 +106,9 @@ static const char *fetch_attr(Slapi_Entry *e, const char *attrname,
+                               const char *default_val);
+ static Slapi_Entry *get_internal_entry(Slapi_PBlock *pb, char *dn);
+ static void modify_internal_entry(char *dn, LDAPMod **mods);
++static void task_des2aes_thread(void *arg);
++static void des2aes_task_destructor(Slapi_Task *task);
++
+ 
+ /***********************************
+  * Public Functions
+@@ -1883,6 +1887,339 @@ out:
+     return SLAPI_DSE_CALLBACK_OK;
+ }
+ 
++/*
++ * des2aes Task
++ *
++ * Convert any DES passwords to AES
++ *
++ * dn: cn=convertPasswords, cn=des2aes,cn=tasks,cn=config
++ * objectclass: top
++ * objectclass: extensibleObject
++ * suffix: dc=example,dc=com (If empty all backends are checked)
++ * suffix: dc=other,dc=suffix
++ */
++struct task_des2aes_data
++{
++    char **suffixes;
++    Slapi_Task *task;
++};
++
++static int
++task_des2aes(Slapi_PBlock *pb, Slapi_Entry *e, Slapi_Entry *eAfter,
++             int *returncode, char *returntext, void *arg)
++{
++    struct task_des2aes_data *task_data = NULL;
++    PRThread *thread = NULL;
++    Slapi_Task *task = NULL;
++    char **suffix = NULL;
++    char **bases = NULL;
++    int rc = SLAPI_DSE_CALLBACK_OK;
++
++    /* Get the suffixes */
++    if((suffix = slapi_entry_attr_get_charray(e, "suffix"))){
++        int i;
++        for (i = 0; suffix && suffix[i]; i++){
++            /* Make sure "suffix" is NUL terminated string */
++            char *dn = slapi_create_dn_string("%s", suffix[i]);
++
++            if(dn){
++                if(slapi_dn_syntax_check(pb, dn, 1)){
++                    /* invalid suffix name */
++                    PR_snprintf(returntext, SLAPI_DSE_RETURNTEXT_SIZE,
++                        "Invalid DN syntax (%s) specified for \"suffix\"\n",
++                        suffix[i]);
++                    *returncode = LDAP_INVALID_DN_SYNTAX;
++                    slapi_ch_free_string(&dn);
++                    rc = SLAPI_DSE_CALLBACK_ERROR;
++                    goto error;
++                } else {
++                    slapi_ch_array_add(&bases, dn);
++                }
++            } else{
++                PR_snprintf(returntext, SLAPI_DSE_RETURNTEXT_SIZE,
++                    "Invalid DN (%s) specified for \"suffix\"\n", suffix[i]);
++                    *returncode = LDAP_INVALID_DN_SYNTAX;
++                rc = SLAPI_DSE_CALLBACK_ERROR;
++                goto error;
++            }
++        }
++    }
++
++    /* Build the task data and fire off a thread to perform the conversion */
++    task = slapi_new_task(slapi_entry_get_ndn(e));
++
++    /* register our destructor for cleaning up our private data */
++    slapi_task_set_destructor_fn(task, des2aes_task_destructor);
++    task_data = (struct task_des2aes_data *)slapi_ch_calloc(1, sizeof(struct task_des2aes_data));
++    task_data->suffixes = bases;
++    task_data->task = task;
++
++    /* Start the conversion thread */
++    thread = PR_CreateThread(PR_USER_THREAD, task_des2aes_thread,
++                             (void *)task_data, PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD,
++                             PR_UNJOINABLE_THREAD, SLAPD_DEFAULT_THREAD_STACKSIZE);
++    if (thread == NULL) {
++        PR_snprintf(returntext, SLAPI_DSE_RETURNTEXT_SIZE,
++                "unable to create des2aes thread!\n");
++        slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                        "unable to create des2aes thread!\n");
++        *returncode = LDAP_OPERATIONS_ERROR;
++        slapi_task_finish(task, *returncode);
++        rc = SLAPI_DSE_CALLBACK_ERROR;
++    }
++
++error:
++    if (rc == SLAPI_DSE_CALLBACK_ERROR){
++        slapi_ch_array_free(bases);
++        slapi_ch_array_free(suffix);
++        slapi_ch_free((void **)&task_data);
++    }
++    return rc;
++}
++
++static void
++task_des2aes_thread(void *arg)
++{
++    struct task_des2aes_data *task_data = arg;
++    Slapi_PBlock *pb = NULL;
++    Slapi_Entry **entries = NULL;
++    Slapi_Task *task = task_data->task;
++    struct slapdplugin *plugin = NULL;
++    char **attrs = NULL;
++    char **backends = NULL;
++    char *val = NULL;
++    int converted_des_passwd = 0;
++    int result = -1;
++    int have_aes = 0;
++    int have_des = 0;
++    int i = 0, ii = 0, be_idx = 0;
++    int rc = 0;
++
++    /*
++     * Check that AES plugin is enabled, and grab all the unique
++     * password attributes.
++     */
++    for ( plugin = get_plugin_list(PLUGIN_LIST_REVER_PWD_STORAGE_SCHEME);
++          plugin != NULL;
++          plugin = plugin->plg_next )
++    {
++        char *plugin_arg = NULL;
++
++        if(strcasecmp(plugin->plg_name, "AES") == 0){
++            /* We have the AES plugin, and its enabled */
++            have_aes = 1;
++        }
++        if(strcasecmp(plugin->plg_name, "DES") == 0){
++            /* We have the DES plugin, and its enabled */
++            have_des = 1;
++        }
++        /* Gather all the unique password attributes from all the PBE plugins */
++        for ( i = 0, plugin_arg = plugin->plg_argv[i];
++              i < plugin->plg_argc;
++              plugin_arg = plugin->plg_argv[++i] )
++        {
++            if(charray_inlist(attrs, plugin_arg)){
++                continue;
++            }
++            charray_add(&attrs, slapi_ch_strdup(plugin_arg));
++        }
++    }
++
++    if(have_aes && have_des){
++        if(task_data->suffixes == NULL){
++            /*
++             * Build a list of all the backend dn's
++             */
++            Slapi_Backend *be = NULL;
++            char *cookie = NULL;
++
++            slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                "Checking for DES passwords to convert to AES...\n");
++            slapi_task_log_notice(task,
++                "Checking for DES passwords to convert to AES...\n");
++
++            be = slapi_get_first_backend(&cookie);
++            while (be){               
++                PR_Lock(be->be_suffixlock);
++                for (i = 0; be->be_suffix && i < be->be_suffixcount; i++) {
++                    char *suffix = (char *)slapi_sdn_get_ndn(be->be_suffix[i]);
++                    if(charray_inlist(backends, suffix) || strlen(suffix) == 0){
++                        continue;
++                    }
++                    charray_add(&backends, slapi_ch_strdup(suffix));;
++                }
++                be = slapi_get_next_backend (cookie);
++            }
++            slapi_ch_free ((void **)&cookie);
++        } else {
++            backends = task_data->suffixes;
++        }
++
++        /*
++         * Search for the password attributes
++         */
++        for (i = 0; attrs && attrs[i]; i++){
++            char *filter = PR_smprintf("%s=*", attrs[i]);
++            /*
++             * Loop over all the backends looking for the password attribute
++             */
++            for(be_idx = 0; backends && backends[be_idx]; be_idx++){
++                pb = slapi_pblock_new();
++                slapi_search_internal_set_pb(pb, backends[be_idx],
++                        LDAP_SCOPE_SUBTREE, filter, NULL, 0, NULL, NULL,
++                        (void *)plugin_get_default_component_id(),
++                        SLAPI_OP_FLAG_IGNORE_UNINDEXED);
++                slapi_search_internal_pb(pb);
++                slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &result);
++                if (LDAP_SUCCESS != result) {
++                    slapi_log_error(SLAPI_LOG_FATAL, "convert_pbe_des_to_aes: ",
++                        "Failed to search for password attribute (%s) error (%d), skipping suffix (%s)\n",
++                        attrs[i], result, backends[be_idx]);
++                    slapi_task_log_notice(task,
++                        "Failed to search for password attribute (%s) error (%d), skipping suffix (%s)\n",
++                        attrs[i], result, backends[be_idx]);
++                    slapi_free_search_results_internal(pb);
++                    slapi_pblock_destroy(pb);
++                    pb = NULL;
++                    continue;
++                }
++                slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_SEARCH_ENTRIES, &entries);
++                for (ii = 0; entries && entries[ii]; ii++){
++                    if((val = slapi_entry_attr_get_charptr(entries[ii], attrs[i]))){
++                        if(strlen(val) >= 5 && strncmp(val,"{DES}", 5) == 0){
++                            /*
++                             * We have a DES encoded password, convert it AES
++                             */
++                            Slapi_PBlock *mod_pb = NULL;
++                            Slapi_Value *sval = NULL;
++                            LDAPMod mod_replace;
++                            LDAPMod *mods[2];
++                            char *replace_val[2];
++                            char *passwd = NULL;
++
++                            /* Decode the DES password */
++                            if(pw_rever_decode(val, &passwd, attrs[i]) == -1){
++                                slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                                        "Failed to decode existing DES password for (%s)\n",
++                                        slapi_entry_get_dn(entries[ii]));
++                                slapi_task_log_notice(task,
++                                    "Failed to decode existing DES password for (%s)\n",
++                                    slapi_entry_get_dn(entries[ii]));
++                                rc = 1;
++                                goto done;
++                            }
++
++                            /* Encode the password */
++                            sval = slapi_value_new_string(passwd);
++                            if(pw_rever_encode(&sval, attrs[i]) == -1){
++                                slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                                    "failed to encode AES password for (%s)\n",
++                                    slapi_entry_get_dn(entries[ii]));
++                                slapi_task_log_notice(task,
++                                    "failed to encode AES password for (%s)\n",
++                                    slapi_entry_get_dn(entries[ii]));
++                                slapi_ch_free_string(&passwd);
++                                slapi_value_free(&sval);
++                                rc = 1;
++                                goto done;
++                            }
++
++                            /* Replace the attribute in the entry */
++                            replace_val[0] = (char *)slapi_value_get_string(sval);
++                            replace_val[1] = NULL;
++                            mod_replace.mod_op = LDAP_MOD_REPLACE;
++                            mod_replace.mod_type = attrs[i];
++                            mod_replace.mod_values = replace_val;
++                            mods[0] = &mod_replace;
++                            mods[1] = 0;
++
++                            mod_pb = slapi_pblock_new();
++                            slapi_modify_internal_set_pb(mod_pb, slapi_entry_get_dn(entries[ii]),
++                                    mods, 0, 0, (void *)plugin_get_default_component_id(), 0);
++                            slapi_modify_internal_pb(mod_pb);
++
++                            slapi_pblock_get(pb, SLAPI_PLUGIN_INTOP_RESULT, &result);
++                            if (LDAP_SUCCESS != result) {
++                                slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                                    "Failed to convert password for (%s) error (%d)\n",
++                                    slapi_entry_get_dn(entries[ii]), result);
++                                slapi_task_log_notice(task,
++                                    "Failed to convert password for (%s) error (%d)\n",
++                                    slapi_entry_get_dn(entries[ii]), result);
++                                rc = 1;
++                            } else {
++                                slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                                    "Successfully converted password for (%s)\n",
++                                     slapi_entry_get_dn(entries[ii]));
++                                slapi_task_log_notice(task,
++                                   "Successfully converted password for (%s)\n",
++                                    slapi_entry_get_dn(entries[ii]));
++                                converted_des_passwd = 1;
++                            }
++                            slapi_ch_free_string(&passwd);
++                            slapi_value_free(&sval);
++                            slapi_pblock_destroy(mod_pb);
++                        }
++                        slapi_ch_free_string(&val);
++                    }
++                }
++                slapi_free_search_results_internal(pb);
++                slapi_pblock_destroy(pb);
++                pb = NULL;
++            }
++            slapi_ch_free_string(&filter);
++        }
++        if (!converted_des_passwd){
++            slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                "No DES passwords found to convert.\n");
++            slapi_task_log_notice(task, "No DES passwords found to convert.\n");
++        }
++    } else {
++        /* No AES/DES */
++        if (!have_des){
++            slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                            "DES plugin not enabled\n");
++            slapi_task_log_notice(task, "DES plugin not enabled\n");
++        }
++        if (!have_aes){
++            slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++                        "AES plugin not enabled\n");
++            slapi_task_log_notice(task, "AES plugin not enabled\n");
++        }
++        slapi_log_error(SLAPI_LOG_FATAL, TASK_DES2AES,
++            "Unable to convert passwords\n");
++        slapi_task_log_notice(task, "Unable to convert passwords\n");
++        rc = 1;
++    }
++
++done:
++    charray_free(attrs);
++    charray_free(backends);
++    slapi_free_search_results_internal(pb);
++    slapi_pblock_destroy(pb);
++    slapi_task_finish(task, rc);
++}
++
++static void
++des2aes_task_destructor(Slapi_Task *task)
++{
++    slapi_log_error(SLAPI_LOG_TRACE, TASK_DES2AES,
++                    "des2aes_task_destructor -->\n" );
++    if (task) {
++        struct task_des2aes_data *task_data = (struct task_des2aes_data *)slapi_task_get_data(task);
++        while (slapi_task_get_refcount(task) > 0) {
++            /* Yield to wait for the task to finish. */
++            DS_Sleep (PR_MillisecondsToInterval(100));
++        }
++        if (task_data) {
++            slapi_ch_array_free(task_data->suffixes);
++            slapi_ch_free((void **)&task_data);
++        }
++    }
++    slapi_log_error(SLAPI_LOG_TRACE, TASK_DES2AES,
++                    "des2aes_task_destructor <--\n" );
++}
++
+ /* cleanup old tasks that may still be in the DSE from a previous session
+  * (this can happen if the server crashes [no matter how unlikely we like
+  * to think that is].)
+@@ -1962,6 +2299,7 @@ void task_init(void)
+     slapi_task_register_handler("restore", task_restore_add);
+     slapi_task_register_handler("index", task_index_add);
+     slapi_task_register_handler("upgradedb", task_upgradedb_add);
++    slapi_task_register_handler("des2aes", task_des2aes);
+ }
+ 
+ /* called when the server is shutting down -- abort all existing tasks */
+-- 
+2.4.11
+

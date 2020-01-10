@@ -1,0 +1,26 @@
+From 7483bb2b4f95a2da3f10cc48fa41b57054ff038c Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Thu, 3 Nov 2016 11:19:41 -0700
+Subject: [PATCH 413/413] Ticket 47462 - Add AES plugin to replace DES plugin
+
+Description: Adding 50AES-pbe-plugin.ldif to update_DATA.
+(cherry picked from commit 4fbcabbef3a2f1197d553f593b4b040ac968eade)
+---
+ Makefile.am | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Makefile.am b/Makefile.am
+index d018cb8..b44fd04 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -500,6 +500,7 @@ update_DATA = ldap/admin/src/scripts/exampleupdate.pl \
+ 	ldap/admin/src/scripts/50smd5pwdstorageplugin.ldif \
+ 	ldap/admin/src/scripts/50refintprecedence.ldif \
+ 	ldap/admin/src/scripts/50retroclprecedence.ldif \
++	ldap/admin/src/scripts/50AES-pbe-plugin.ldif \
+ 	ldap/admin/src/scripts/52updateAESplugin.pl \
+ 	ldap/admin/src/scripts/60upgradeschemafiles.pl \
+ 	ldap/admin/src/scripts/70upgradefromldif.pl \
+-- 
+2.4.11
+

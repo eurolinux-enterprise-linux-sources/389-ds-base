@@ -1,0 +1,53 @@
+From 58517b8d4326132add54d44a8d3e9377c192056b Mon Sep 17 00:00:00 2001
+From: Thierry Bordaz <tbordaz@redhat.com>
+Date: Thu, 8 Sep 2016 11:38:15 +0200
+Subject: [PATCH 393/394] Bug 1354331 - use a consumer maxcsn only as anchor if
+ supplier is more advanced
+
+(cherry picked from commit 40d005465f0faa3e84c8515d6ccb591d3bf1e4b5)
+(cherry picked from commit ed420cd66c0e84a686ef3a4668e302d7a30affbe)
+---
+ ldap/servers/plugins/replication/cl5_clcache.c | 20 +++++++++-----------
+ 1 file changed, 9 insertions(+), 11 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/cl5_clcache.c b/ldap/servers/plugins/replication/cl5_clcache.c
+index 0b8feee..f6c56a9 100644
+--- a/ldap/servers/plugins/replication/cl5_clcache.c
++++ b/ldap/servers/plugins/replication/cl5_clcache.c
+@@ -747,24 +747,22 @@ clcache_adjust_anchorcsn ( CLC_Buffer *buf, int *flag )
+ 								curr, conmaxcsn);
+ 			}
+ 
+-			if (csn_compare (cscb->local_maxcsn, cscb->prev_local_maxcsn) == 0 ||
+-			    csn_compare (cscb->prev_local_maxcsn, buf->buf_current_csn) > 0 ) {
+-				if (csn_compare (cscb->local_maxcsn, cscb->consumer_maxcsn) > 0 ) {
++			if (csn_compare(cscb->local_maxcsn, cscb->consumer_maxcsn) > 0) {
++				/* We have something to send for this RID */
++
++				if (csn_compare(cscb->local_maxcsn, cscb->prev_local_maxcsn) == 0 ||
++					csn_compare(cscb->prev_local_maxcsn, buf->buf_current_csn) > 0) {
++					/* No new changes or it remains, in the buffer, updates to send  */
+ 					rid_anchor = buf->buf_current_csn;
+-				}
+-			} else {
+-				/* prev local max csn < csnBuffer AND different from local maxcsn */
+-				if (cscb->prev_local_maxcsn == NULL) {
++				} else {
++					/* prev local max csn < csnBuffer AND different from local maxcsn */
+ 					if (cscb->consumer_maxcsn == NULL) {
+ 						/* the consumer hasn't seen changes for this RID */
+ 						rid_anchor = cscb->local_mincsn;
+ 						rid_flag = DB_SET;
+-					} else if ( csn_compare (cscb->local_maxcsn, cscb->consumer_maxcsn) > 0 ) {
++					} else {
+ 						rid_anchor = cscb->consumer_maxcsn;
+ 					}
+-				} else {
+-					/* csnPrevMaxSup > 0 */
+-					rid_anchor = cscb->consumer_maxcsn;
+ 				}
+ 			}
+ 
+-- 
+2.4.11
+

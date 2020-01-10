@@ -1,0 +1,47 @@
+From bcb16bff39feb1bd965fb3fc98d815225946de57 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Wed, 31 Jul 2013 12:21:19 -0400
+Subject: [PATCH 412/413] Ticket 47411 - Replace substring search with plain
+ search in referint plugin
+
+Bug Description:  RI plugin uses a substring search by default, which is much more
+                  expensive than an equality search filter.
+
+Fix Description:  Only use the substring search if the operation is a modrdn.
+
+https://fedorahosted.org/389/ticket/47411
+
+Reveiwed by: richm(Thanks!)
+
+(cherry picked from commit a5dde495a7df7b19fd71cccdb0eb1b91d1f73b58)
+(cherry picked from commit 6cc76d8a96b4c41b00475280b0f3f236778bb35e)
+---
+ ldap/servers/plugins/referint/referint.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/plugins/referint/referint.c b/ldap/servers/plugins/referint/referint.c
+index 4a722c1..bd0fbe9 100644
+--- a/ldap/servers/plugins/referint/referint.c
++++ b/ldap/servers/plugins/referint/referint.c
+@@ -704,11 +704,14 @@ update_integrity(char **argv, Slapi_DN *origSDN,
+     {
+         search_base = slapi_sdn_get_dn( sdn );
+ 
+-        for(i = 3; argv[i] != NULL; i++)
+-        {
++        for(i = 3; argv[i] != NULL; i++){
+             char buf[BUFSIZ];
+-            filter = slapi_ch_smprintf("(%s=*%s)", argv[i],
+-                                    escape_filter_value(origDN, len, buf));
++            if(newrDN){
++                /* we need to check the children of the old dn, so use a wildcard */
++                filter = slapi_ch_smprintf("(%s=*%s)", argv[i], escape_filter_value(origDN, len, buf));
++            } else {
++                filter = slapi_ch_smprintf("(%s=%s)", argv[i], escape_filter_value(origDN, len, buf));
++            }
+             if ( filter ) {
+                 /* Need only the current attribute and its subtypes */
+                 char *attrs[2];
+-- 
+2.4.11
+

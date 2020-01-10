@@ -1,0 +1,294 @@
+From 810bc01880bc392ef1401a1dcd70c663ae90bc17 Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Mon, 5 Jan 2015 13:07:07 -0800
+Subject: [PATCH 414/425] Ticket #47966 - slapd crashes during Dogtag clone
+ reinstallation
+
+Bug description: There were 2 VLV index issues.
+1) When a VLV index is removed, it did not call dblayer_erase_index_file_
+   nolock, which removes the physical index file as well as a back pointer
+   set to the dblayer handle.  The back pointer is scanned at the backend
+   close time where the garbage address is used to close the already removed
+   vlv index.
+2) VLV plugin callbacks are registered in vlv_init.  The function could be
+   called multiple times without unregster the VLV plugin callbacks, e.g.,
+   from bulk import, which reopens the backend instance.  If create an
+   instance and a vlv index, then initialize the database with bulk import,
+   2 VLV index callbacks are registered.  The first set points the old instance
+   address, which is already freed.
+   Note: the unregister callback functions are called only when the instance
+   is deleted in vlv_remove_callbacks via ldbm_instance_unregister_callbacks.
+   The callback is set as the post delete plugin with "(objectclass=nsBackendInstance)".
+
+Fix description:
+1) When a VLV index is removed, it calls dblayer_erase_index_file_nolock.
+2) Before registering VLV plugin callbacks, calling unregister callbacks to
+   make sure cleaning up the existing callbacks.
+
+https://fedorahosted.org/389/ticket/47966
+
+Reviewed by rmeggins@redhat.com and mreynolds@redhat.com (Thank you, Rich and Mark!!)
+
+(cherry picked from commit ebf24ffd5ac79adcb288960377605feb60c52d7f)
+(cherry picked from commit 860be43b335c9bd449493032f6dec51e05aa4c09)
+---
+ ldap/servers/slapd/back-ldbm/back-ldbm.h |  4 +-
+ ldap/servers/slapd/back-ldbm/dblayer.c   | 71 ++++++++++++++++++--------------
+ ldap/servers/slapd/back-ldbm/vlv.c       | 24 ++++++++---
+ ldap/servers/slapd/back-ldbm/vlv_srch.c  | 17 ++++----
+ 4 files changed, 70 insertions(+), 46 deletions(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/back-ldbm.h b/ldap/servers/slapd/back-ldbm/back-ldbm.h
+index ec0e2dc..98d7145 100644
+--- a/ldap/servers/slapd/back-ldbm/back-ldbm.h
++++ b/ldap/servers/slapd/back-ldbm/back-ldbm.h
+@@ -707,15 +707,15 @@ typedef struct _modify_context modify_context;
+ 
+ /* This structure was moved here from dblayer.c because the ldbm_instance 
+  * structure uses the dblayer_handle structure.  */
+-struct tag_dblayer_handle; typedef struct tag_dblayer_handle dblayer_handle;
+ struct tag_dblayer_handle
+ {
+ 	DB*	dblayer_dbp;
+ 	PRLock *dblayer_lock;	/* used when anyone wants exclusive access to a file */
+-	dblayer_handle *dblayer_handle_next;
++	struct tag_dblayer_handle *dblayer_handle_next;
+ 	void **dblayer_handle_ai_backpointer; /* Voodo magic pointer to the place where we store a 
+ 											pointer to this handle in the attrinfo structure */
+ };
++typedef struct tag_dblayer_handle dblayer_handle;
+ 
+ /* This structure was moved here from perfctrs.c so the ldbm_instance structure
+  * could use it. */
+diff --git a/ldap/servers/slapd/back-ldbm/dblayer.c b/ldap/servers/slapd/back-ldbm/dblayer.c
+index 228fdea..a08913b 100644
+--- a/ldap/servers/slapd/back-ldbm/dblayer.c
++++ b/ldap/servers/slapd/back-ldbm/dblayer.c
+@@ -2635,7 +2635,7 @@ int dblayer_close_indexes(backend *be)
+         pDB = handle->dblayer_dbp;
+         return_value |= pDB->close(pDB,0);
+         next = handle->dblayer_handle_next;
+-        *(handle->dblayer_handle_ai_backpointer) = NULL;
++        *((dblayer_handle **)handle->dblayer_handle_ai_backpointer) = NULL;
+         slapi_ch_free((void**)&handle);
+     }
+ 
+@@ -3210,39 +3210,32 @@ int dblayer_get_index_file(backend *be, struct attrinfo *a, DB** ppDB, int open_
+                                    a, &pDB);
+   if (0 == return_value) {
+       /* Opened it OK */
+-      dblayer_handle *handle = (dblayer_handle *) 
+-        slapi_ch_calloc(1, sizeof(dblayer_handle));
+-      
+-      if (NULL == handle) {
+-        /* Memory allocation failed */
+-        return_value = -1;
+-      } else {
+-        dblayer_handle *prev_handle = inst->inst_handle_tail;
++      dblayer_handle *handle = (dblayer_handle *)slapi_ch_calloc(1, sizeof(dblayer_handle));
++      dblayer_handle *prev_handle = inst->inst_handle_tail;
+         
+-        PR_ASSERT(NULL != pDB);
+-        /* Store the returned DB* in our own private list of
+-         * open files */
+-        if (NULL == prev_handle) {
++      PR_ASSERT(NULL != pDB);
++      /* Store the returned DB* in our own private list of
++       * open files */
++      if (NULL == prev_handle) {
+           /* List was empty */
+           inst->inst_handle_tail = handle;
+           inst->inst_handle_head = handle;
+-        } else {
++      } else {
+           /* Chain the handle onto the last structure in the
+            * list */
+           inst->inst_handle_tail = handle;
+           prev_handle->dblayer_handle_next = handle;
+-        }
+-        /* Stash a pointer to our wrapper structure in the
+-         * attrinfo structure */
+-        handle->dblayer_dbp = pDB;
+-        /* And, most importantly, return something to the caller!*/
+-        *ppDB = pDB;
+-        /* and save the hande in the attrinfo structure for
+-         * next time */
+-        a->ai_dblayer = handle;
+-        /* don't need to update count -- we incr'd it already */
+-        handle->dblayer_handle_ai_backpointer = &(a->ai_dblayer);
+       }
++      /* Stash a pointer to our wrapper structure in the
++       * attrinfo structure */
++      handle->dblayer_dbp = pDB;
++      /* And, most importantly, return something to the caller!*/
++      *ppDB = pDB;
++      /* and save the hande in the attrinfo structure for
++       * next time */
++      a->ai_dblayer = handle;
++      /* don't need to update count -- we incr'd it already */
++      handle->dblayer_handle_ai_backpointer = &(a->ai_dblayer);
+   } else {
+     /* Did not open it OK ! */
+     /* Do nothing, because return value and fact that we didn't
+@@ -3314,10 +3307,10 @@ dblayer_db_remove(dblayer_private_env * env, char const path[], char const dbNam
+ int dblayer_erase_index_file_ex(backend *be, struct attrinfo *a,
+                                 PRBool use_lock, int no_force_checkpoint)
+ {
+-  struct ldbminfo *li = (struct ldbminfo *) be->be_database->plg_private;
+-  dblayer_private *priv = (dblayer_private*) li->li_dblayer_private;
+-  struct dblayer_private_env *pEnv = priv->dblayer_env;
+-  ldbm_instance *inst = (ldbm_instance *) be->be_instance_info;
++  struct ldbminfo *li = NULL;
++  dblayer_private *priv = NULL;
++  struct dblayer_private_env *pEnv = NULL;
++  ldbm_instance *inst = NULL;
+   dblayer_handle *handle = NULL;
+   char dbName[MAXPATHLEN];
+   char *dbNamep;
+@@ -3326,9 +3319,25 @@ int dblayer_erase_index_file_ex(backend *be, struct attrinfo *a,
+   int rc = 0;
+   DB *db = 0;
+ 
+-  if (NULL == pEnv)        /* db does not exist */
++  if ((NULL == be) || (NULL == be->be_database)) {
+     return rc;
+- 
++  }
++  inst = (ldbm_instance *)be->be_instance_info;
++  if (NULL == inst) {
++    return rc;
++  }
++  li = (struct ldbminfo *)be->be_database->plg_private;
++  if (NULL == li) {
++    return rc;
++  }
++  priv = (dblayer_private*)li->li_dblayer_private;
++  if (NULL == priv) {
++    return rc;
++  }
++  pEnv = priv->dblayer_env;
++  if (NULL == pEnv) {      /* db does not exist */
++    return rc;
++  }
+   /* Added for bug 600401. Somehow the checkpoint thread deadlocked on
+      index file with this function, index file couldn't be removed on win2k.
+      Force a checkpoint here to break deadlock.
+diff --git a/ldap/servers/slapd/back-ldbm/vlv.c b/ldap/servers/slapd/back-ldbm/vlv.c
+index ad38889..8c36517 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv.c
++++ b/ldap/servers/slapd/back-ldbm/vlv.c
+@@ -74,7 +74,10 @@ int vlv_AddSearchEntry(Slapi_PBlock *pb, Slapi_Entry* entryBefore, Slapi_Entry*
+ {
+     ldbm_instance *inst = (ldbm_instance *)arg;
+     struct vlvSearch* newVlvSearch= vlvSearch_new();
+-    backend *be = inst->inst_be;
++    backend *be = NULL;
++    if (inst) {
++        be = inst->inst_be;
++    }
+     
+     if (NULL == be) { /* backend is not associated */
+         vlvSearch_delete(&newVlvSearch);
+@@ -417,8 +420,19 @@ vlv_init(ldbm_instance *inst)
+     }
+ 
+     /* Only need to register these callbacks for SLAPD mode... */
+-    if(basedn!=NULL)
++    if(basedn)
+     {
++        /* In case the vlv indexes are already registered, clean them up before register them. */
++        slapi_config_remove_callback(SLAPI_OPERATION_SEARCH,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_SearchIndexEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_ADD,DSE_FLAG_PREOP,basedn,scope,searchfilter,vlv_AddSearchEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_ADD,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_AddIndexEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_MODIFY,DSE_FLAG_PREOP,basedn,scope,searchfilter,vlv_ModifySearchEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_MODIFY,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_ModifyIndexEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_DELETE,DSE_FLAG_PREOP,basedn,scope,searchfilter,vlv_DeleteSearchEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_DELETE,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_DeleteIndexEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_MODRDN,DSE_FLAG_PREOP,basedn,scope,searchfilter,vlv_ModifyRDNSearchEntry);
++        slapi_config_remove_callback(SLAPI_OPERATION_MODRDN,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_ModifyRDNIndexEntry);
++
+         slapi_config_register_callback(SLAPI_OPERATION_SEARCH,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_SearchIndexEntry,(void*)inst);
+         slapi_config_register_callback(SLAPI_OPERATION_ADD,DSE_FLAG_PREOP,basedn,scope,searchfilter,vlv_AddSearchEntry,(void*)inst);
+         slapi_config_register_callback(SLAPI_OPERATION_ADD,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_AddIndexEntry,(void*)inst);
+@@ -428,7 +442,7 @@ vlv_init(ldbm_instance *inst)
+         slapi_config_register_callback(SLAPI_OPERATION_DELETE,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_DeleteIndexEntry,(void*)inst);
+         slapi_config_register_callback(SLAPI_OPERATION_MODRDN,DSE_FLAG_PREOP,basedn,scope,searchfilter,vlv_ModifyRDNSearchEntry,(void*)inst);
+         slapi_config_register_callback(SLAPI_OPERATION_MODRDN,DSE_FLAG_PREOP,basedn,scope,indexfilter,vlv_ModifyRDNIndexEntry,(void*)inst);
+-		slapi_ch_free_string(&basedn);
++        slapi_ch_free_string(&basedn);
+     }
+ 
+ out:
+@@ -438,8 +452,8 @@ out:
+ /* Removes callbacks from above when  instance is removed. */
+ 
+ int 
+-vlv_remove_callbacks(ldbm_instance *inst) {
+-
++vlv_remove_callbacks(ldbm_instance *inst)
++{
+     int return_value= LDAP_SUCCESS;
+     int scope= LDAP_SCOPE_SUBTREE;
+     char *basedn = NULL;
+diff --git a/ldap/servers/slapd/back-ldbm/vlv_srch.c b/ldap/servers/slapd/back-ldbm/vlv_srch.c
+index 8edf295..16ebb0b 100644
+--- a/ldap/servers/slapd/back-ldbm/vlv_srch.c
++++ b/ldap/servers/slapd/back-ldbm/vlv_srch.c
+@@ -572,6 +572,7 @@ vlvIndex_delete(struct vlvIndex** ppvs)
+             }
+         }
+         internal_ldap_free_sort_keylist((*ppvs)->vlv_sortkey);
++        dblayer_erase_index_file_nolock((*ppvs)->vlv_be, (*ppvs)->vlv_attrinfo, 1 /* chkpt if not busy */);
+         attrinfo_delete(&((*ppvs)->vlv_attrinfo));
+         slapi_ch_free((void**)&((*ppvs)->vlv_name));
+         slapi_ch_free((void**)&((*ppvs)->vlv_filename));
+@@ -618,7 +619,7 @@ vlvIndex_init(struct vlvIndex* p, backend *be, struct vlvSearch* pSearch, const
+         {
+             if(p->vlv_sortkey[n]->sk_matchruleoid!=NULL)
+             {
+-				create_matchrule_indexer(&p->vlv_mrpb[n],p->vlv_sortkey[n]->sk_matchruleoid,p->vlv_sortkey[n]->sk_attrtype);
++                create_matchrule_indexer(&p->vlv_mrpb[n],p->vlv_sortkey[n]->sk_matchruleoid,p->vlv_sortkey[n]->sk_attrtype);
+             }
+ 
+         }
+@@ -632,7 +633,7 @@ vlvIndex_init(struct vlvIndex* p, backend *be, struct vlvSearch* pSearch, const
+ 
+         /* Create an attrinfo structure */
+         p->vlv_attrinfo->ai_type= slapi_ch_smprintf("%s%s",file_prefix,filename);
+-    	p->vlv_attrinfo->ai_indexmask= INDEX_VLV;
++        p->vlv_attrinfo->ai_indexmask= INDEX_VLV;
+ 
+         /* Check if the index file actually exists */
+         if(li!=NULL)
+@@ -657,14 +658,14 @@ vlvIndex_get_indexlength(struct vlvIndex* p, DB *db, back_txn *txn)
+ 
+     if(!p->vlv_indexlength_cached)
+     {
+-       	DBC *dbc = NULL;
+-    	DB_TXN	*db_txn = NULL;
++        DBC *dbc = NULL;
++        DB_TXN *db_txn = NULL;
+         int err= 0;
+-		if (NULL != txn)
++        if (NULL != txn)
+         {
+-			db_txn = txn->back_txn_txn;
++            db_txn = txn->back_txn_txn;
+         }
+-       	err = db->cursor(db, db_txn, &dbc, 0);
++        err = db->cursor(db, db_txn, &dbc, 0);
+         if(err==0)
+         {
+             DBT key= {0};
+@@ -924,7 +925,7 @@ vlvIndex_createfilename(struct vlvIndex* pIndex, char **ppc)
+     *p= '\0';
+     if(strlen(filename)==0)
+     {
+-       	LDAPDebug( LDAP_DEBUG_ANY, "Couldn't generate valid filename from Virtual List View Index Name (%s).  Need some alphabetical characters.\n", pIndex->vlv_name, 0, 0);
++        LDAPDebug( LDAP_DEBUG_ANY, "Couldn't generate valid filename from Virtual List View Index Name (%s).  Need some alphabetical characters.\n", pIndex->vlv_name, 0, 0);
+         filenameValid= 0;
+     }
+     /* JCM: Check if this file clashes with another VLV Index filename */
+-- 
+2.9.3
+

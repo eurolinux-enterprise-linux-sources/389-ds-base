@@ -1,0 +1,40 @@
+From 90b8bd881fccd964199953bc038f0d6f6b903015 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Mon, 14 Jul 2014 10:47:52 -0400
+Subject: [PATCH 394/394] Ticket 47858 - Internal searches using
+ OP_FLAG_REVERSE_CANDIDATE_ORDER can crash the server
+
+Bug Description:  If an internal search uses OP_FLAG_REVERSE_CANDIDATE_ORDER, and
+                  the search fails tro find any candidates the server will crash.
+
+Fix Description:  Make sure we do not dereference a NULL sr_candidates pointer in
+                  ldbm_search().
+
+https://fedorahosted.org/389/ticket/47858
+
+Reviewed by: rmeggins(Thanks!)
+
+(cherry picked from commit e6cee31aa2beb6496df86490776f1f93d3a8348b)
+(cherry picked from commit da318fa5f147e229069b13c0479fdf81ccc28213)
+(cherry picked from commit 7dc69db08c6949ec43a55058e2318158d023770c)
+(cherry picked from commit 7a41ef4039e3d0a01064c23d4000eb2b632d724b)
+---
+ ldap/servers/slapd/back-ldbm/ldbm_search.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/back-ldbm/ldbm_search.c b/ldap/servers/slapd/back-ldbm/ldbm_search.c
+index d468481..952b987 100644
+--- a/ldap/servers/slapd/back-ldbm/ldbm_search.c
++++ b/ldap/servers/slapd/back-ldbm/ldbm_search.c
+@@ -1460,7 +1460,7 @@ ldbm_back_next_search_entry_ext( Slapi_PBlock *pb, int use_extension )
+          * search can enter this function multiple times, we need to keep track
+          * of our state, and only initialize sr_current once.
+          */
+-        if(!op->o_reverse_search_state){
++        if(!op->o_reverse_search_state && sr->sr_candidates){
+             sr->sr_current = sr->sr_candidates->b_nids;
+             op->o_reverse_search_state = REV_STARTED;
+         }
+-- 
+2.4.11
+

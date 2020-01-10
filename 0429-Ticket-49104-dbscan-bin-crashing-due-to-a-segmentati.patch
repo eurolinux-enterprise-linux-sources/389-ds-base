@@ -1,0 +1,71 @@
+From 659ef1334287b48b7ecfa6457cc4743e7f2c06dd Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Thu, 26 Jan 2017 15:10:46 -0800
+Subject: [PATCH 429/429] Ticket #49104 - dbscan-bin crashing due to a
+ segmentation fault
+
+Description: There was a logic error in format_raw.  When a truncate
+option (-t width) is given, the function cut the output and replace
+the last 5 bytes with " ...\0".  The position to start the replace
+was not correct in some case.
+
+https://fedorahosted.org/389/ticket/49104
+
+Reviewed by wibrown@redhat.com (Thank you, William!!)
+
+(cherry picked from commit efeb2f6e873df32ce7545fa1fb319806d2108fda)
+(cherry picked from commit 3e3bcee42d3cb800457127e0d71ed7ce7a5d65a0)
+(cherry picked from commit 93946f9e853d5f17b894ffb11a1dcfaeb9698890)
+---
+ ldap/servers/slapd/tools/dbscan.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/ldap/servers/slapd/tools/dbscan.c b/ldap/servers/slapd/tools/dbscan.c
+index d84f138..c9445c6 100644
+--- a/ldap/servers/slapd/tools/dbscan.c
++++ b/ldap/servers/slapd/tools/dbscan.c
+@@ -239,6 +239,7 @@ static char *format_raw(unsigned char *s, int len, int flags,
+         return NULL;
+ 
+     for (p = s, o = buf, i = 0; i < len && o < bufend; p++, i++) {
++        int ishex = 0;
+         if ((*p == '%') || (*p <= ' ') || (*p >= 126)) {
+             /* index keys are stored with their trailing NUL */
+             if ((*p == 0) && (i == len-1))
+@@ -252,18 +253,32 @@ static char *format_raw(unsigned char *s, int len, int flags,
+                 *o++ = '%';
+                 *o++ = hex[*p / 16];
+                 *o++ = hex[*p % 16];
++                ishex = 1;
+             }
+         } else {
+             *o++ = *p;
+         }
+         if (truncatesiz > 0 && o > bufend - 5) {
+             /* truncate it */
++            /*
++             * Padding " ...\0" at the end of the buf.
++             * If dumped as %##, truncate the partial value if any.
++             */
++            o = bufend - 5;
++            if (ishex) {
++                if ((o > buf) && *(o-1) == '%') {
++                    o -= 1;
++                } else if ((o > buf + 1) && *(o-2) == '%') {
++                    o -= 2;
++                }
++            }
+             strcpy((char *)o, " ...");
+             i = len;
+             o += 4;
++            break;
+         }
+     }
+-    *o = 0;
++    *o = '\0';
+     return (char *)buf;
+ }
+ 
+-- 
+2.9.3
+

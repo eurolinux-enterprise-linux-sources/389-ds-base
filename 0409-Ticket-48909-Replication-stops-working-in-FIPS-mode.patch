@@ -1,0 +1,77 @@
+From 32e9133c933830ff0ae89401365e1e912c771ecb Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Fri, 14 Oct 2016 16:17:46 -0400
+Subject: [PATCH 409/410] Ticket 48909 - Replication stops working in FIPS mode
+
+Bug Description:  When FIPS mode is enabled on the security database, the
+                  token name is changed.  This prevents the server from
+                  reverse decoding the replication manager's password.  Which
+                  prevents replication sessions from getting established.
+
+Fix Description:  Instead of getting the key slot from the harded coded token
+                  name, call slapd_pk11_getInternalKeySlot() which gets the
+                  current slot.
+
+https://fedorahosted.org/389/ticket/48909
+
+Reviewed by: nhosoi(Thanks!)
+
+(cherry picked from commit 61c72f966bda17993f483e8f79d97dff20b7cc93)
+(cherry picked from commit c55e70835b4896ca178f6db2e9efe3545617357e)
+---
+ ldap/servers/plugins/rever/pbe.c | 11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+
+diff --git a/ldap/servers/plugins/rever/pbe.c b/ldap/servers/plugins/rever/pbe.c
+index abb8d1b..7206bb9 100644
+--- a/ldap/servers/plugins/rever/pbe.c
++++ b/ldap/servers/plugins/rever/pbe.c
+@@ -98,7 +98,7 @@ struct pk11ContextStore
+ 
+ static int encode_path(char *inPlain, char **outCipher, char *path, int mech);
+ static int decode_path(char *inCipher, char **outPlain, char *path, int mech, char *algid);
+-static SVRCOREError genKey(struct pk11ContextStore **out, const char *token, char *path, int mech, PRArenaPool *arena, char *algid);
++static SVRCOREError genKey(struct pk11ContextStore **out, char *path, int mech, PRArenaPool *arena, char *algid);
+ static SVRCOREError cryptPassword(struct pk11ContextStore *store, char * clear, unsigned char **out);
+ static SVRCOREError decryptPassword(struct pk11ContextStore *store, unsigned char *cipher, char **out, int len);
+ static void freePBE(struct pk11ContextStore *store);
+@@ -131,7 +131,7 @@ encode_path(char *inPlain, char **outCipher, char *path, int mech)
+     *outCipher = NULL;
+     err = 1;
+ 
+-    if ( genKey(&context, tokPBE, path, mech, arena, NULL) == SVRCORE_Success ){
++    if ( genKey(&context, path, mech, arena, NULL) == SVRCORE_Success ){
+         /* Try an encryption */
+         if ( cryptPassword(context, inPlain, &cipher) == SVRCORE_Success ){
+             base = BTOA_DataToAscii(cipher, context->length);
+@@ -189,7 +189,7 @@ decode_path(char *inCipher, char **outPlain, char *path, int mech, char *algid)
+     *outPlain = NULL;
+     err = 1;
+ 
+-    if ( genKey(&context, tokPBE, path, mech, arena, algid) == SVRCORE_Success ){
++    if ( genKey(&context, path, mech, arena, algid) == SVRCORE_Success ){
+         /* it seems that there is memory leak in that function: bug 400170 */
+         base = ATOB_AsciiToData(inCipher, (unsigned int*)&len);
+         if ( base != NULL ){
+@@ -225,7 +225,7 @@ freePBE(struct pk11ContextStore *store)
+ }
+ 
+ static SVRCOREError
+-genKey(struct pk11ContextStore **out, const char *token, char *path, int mech, PRArenaPool *arena, char *alg)
++genKey(struct pk11ContextStore **out, char *path, int mech, PRArenaPool *arena, char *alg)
+ {
+     SVRCOREError err = SVRCORE_Success;
+     struct pk11ContextStore *store = NULL;
+@@ -252,8 +252,7 @@ genKey(struct pk11ContextStore **out, const char *token, char *path, int mech, P
+     }
+     *out = store;
+ 
+-    /* Use the tokenName to find a PKCS11 slot */
+-    store->slot = slapd_pk11_findSlotByName((char *)token);
++    store->slot = slapd_pk11_getInternalKeySlot();
+     if (store->slot == NULL){
+         err = SVRCORE_NoSuchToken_Error;
+         goto done;
+-- 
+2.4.11
+

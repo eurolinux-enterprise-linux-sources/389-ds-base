@@ -1,0 +1,838 @@
+From da3465fea52c2c9b2c7c17848e965ef873263a36 Mon Sep 17 00:00:00 2001
+From: Mark Reynolds <mreynolds@redhat.com>
+Date: Wed, 8 Jun 2016 13:06:46 -0400
+Subject: [PATCH 383/386] Ticket 48636 - Improve replication convergence
+
+Bug Description:  In a busy MMR environment where multiple masters are being
+                  updated at the same time the replica sessions stay open for
+                  a very long time.  This causes other masters to wait to send
+                  their updates.  This causes lop-sided convergence.  Where
+                  entries added to the MMR environment, but on different masters,
+                  take a very different amount of time until they are each seen
+                  on all the replicas.
+
+Fix Description:  A new configuratoin setting was added (nsds5ReplicaReleaseTimeout)
+                  to the replica configuration entry.  So when replica A tries
+                  to acquire a replica B, replica B send a control back to the
+                  master(master C) that is updating replica B to abort the session.
+                  Master C will continue sending updates for the amount of time
+                  specified in the the "release timeout", then it will "yield" its
+                  current session so other replicas can acquire that replica.
+
+https://fedorahosted.org/389/ticket/48636
+
+Reviewed by: lkrispen & nhosoi(Thanks!!)
+
+(cherry picked from commit a1545cdae48e4b4e1fc87a168e4d8f959626f112)
+(cherry picked from commit f223b500264d00c5c2b97bf903bd501be1487afe)
+(cherry picked from commit 2fc070e233c904ab0514527e73da28b2f0af10bb)
+(cherry picked from commit 417c1504c872afac3f8727b8ba238fcebc6aa61d)
+---
+ ldap/schema/01core389.ldif                         | 156 ++++++++++++++++++++-
+ ldap/servers/plugins/replication/repl5.h           |  16 ++-
+ .../plugins/replication/repl5_inc_protocol.c       |  99 +++++++++----
+ ldap/servers/plugins/replication/repl5_plugins.c   |   3 +-
+ ldap/servers/plugins/replication/repl5_replica.c   | 143 +++++++++++++++----
+ .../plugins/replication/repl5_replica_config.c     |  22 +++
+ ldap/servers/plugins/replication/repl_globals.c    |   1 +
+ 7 files changed, 383 insertions(+), 57 deletions(-)
+
+diff --git a/ldap/schema/01core389.ldif b/ldap/schema/01core389.ldif
+index f8924fa..739750e 100644
+--- a/ldap/schema/01core389.ldif
++++ b/ldap/schema/01core389.ldif
+@@ -153,8 +153,162 @@ attributeTypes: ( 2.16.840.1.113730.3.1.2152 NAME 'nsds5ReplicaProtocolTimeout'
+ attributeTypes: ( 2.16.840.1.113730.3.1.2154 NAME 'nsds5ReplicaBackoffMin' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
+ attributeTypes: ( 2.16.840.1.113730.3.1.2155 NAME 'nsds5ReplicaBackoffMax' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
+ attributeTypes: ( 2.16.840.1.113730.3.1.2156 NAME 'nsslapd-sasl-max-buffer-size' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++<<<<<<< HEAD
+ attributeTypes: ( 2.16.840.1.113730.3.1.2310 NAME 'nsds5ReplicaFlowControlWindow' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' ) 
+ attributeTypes: ( 2.16.840.1.113730.3.1.2311 NAME 'nsds5ReplicaFlowControlPause' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' ) 
++attributeTypes: ( 2.16.840.1.113730.3.1.2332 NAME 'allowWeakDHParam' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++=======
++attributeTypes: ( 2.16.840.1.113730.3.1.2165 NAME 'schemaUpdateObjectclassAccept' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2166 NAME 'schemaUpdateObjectclassReject' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2167 NAME 'schemaUpdateAttributeAccept' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2168 NAME 'schemaUpdateAttributeReject' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2169 NAME 'nsslapd-pagedsizelimit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2170 NAME 'nsslapd-accesslog-level' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2171 NAME 'nsslapd-accesslog-maxlogsperdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2172 NAME 'nsslapd-accesslog-maxlogsize' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2173 NAME 'nsslapd-errorlog-maxlogsize' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2174 NAME 'nsslapd-auditlog-maxlogsize' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2175 NAME 'nsslapd-accesslog-logrotationsync-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2176 NAME 'nsslapd-errorlog-logrotationsync-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2177 NAME 'nsslapd-auditlog-logrotationsync-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2178 NAME 'nsslapd-accesslog-logrotationsynchour' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2179 NAME 'nsslapd-errorlog-logrotationsynchour' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2180 NAME 'nsslapd-auditlog-logrotationsynchour' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2181 NAME 'nsslapd-accesslog-logrotationsyncmin' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2182 NAME 'nsslapd-errorlog-logrotationsyncmin' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2183 NAME 'nsslapd-audit-logrotationsyncmin' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2184 NAME 'nsslapd-accesslog-logrotationtime' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2185 NAME 'nsslapd-errorlog-logrotationtime' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2186 NAME 'nsslapd-auditlog-logrotationtime' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2187 NAME 'nsslapd-accesslog-logrotationtimeunit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2188 NAME 'nsslapd-errorlog-logrotationtimeunit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2189 NAME 'nsslapd-auditlog-logrotationtimeunit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2190 NAME 'nsslapd-accesslog-logmaxdiskspace' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2191 NAME 'nsslapd-errorlog-logmaxdiskspace' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2192 NAME 'nsslapd-auditlog-logmaxdiskspace' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2193 NAME 'nsslapd-accesslog-logminfreediskspace' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2194 NAME 'nsslapd-errorlog-logminfreediskspace' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2195 NAME 'nsslapd-auditlog-logminfreediskspace' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2196 NAME 'nsslapd-accesslog-logexpirationtime' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2197 NAME 'nsslapd-errorlog-logexpirationtime' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2198 NAME 'nsslapd-auditlog-logexpirationtime' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2199 NAME 'nsslapd-accesslog-logexpirationtimeunit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2200 NAME 'nsslapd-errorlog-logexpirationtimeunit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2201 NAME 'nsslapd-auditlog-logexpirationtimeunit' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2202 NAME 'nsslapd-accesslog-logging-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2203 NAME 'nsslapd-errorlog-logging-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2204 NAME 'nsslapd-auditlog-logging-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2205 NAME 'nsslapd-auditlog-logging-hide-unhashed-pw' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2206 NAME 'nsslapd-unhashed-pw-switch' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2207 NAME 'nsslapd-rootdn' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2208 NAME 'nsslapd-rootdnpw' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2209 NAME 'nsslapd-rootpwstoragescheme' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2210 NAME 'nsslapd-auditlog' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2211 NAME 'nsslapd-dynamicconf' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2212 NAME 'nsslapd-useroc' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2213 NAME 'nsslapd-userat' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2214 NAME 'nsslapd-svrtab' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2215 NAME 'nsslapd-allow-unauthenticated-binds' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2216 NAME 'nsslapd-require-secure-binds' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2217 NAME 'nsslapd-allow-anonymous-access' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2218 NAME 'nsslapd-localssf' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2219 NAME 'nsslapd-minssf' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2220 NAME 'nsslapd-minssf-exclude-rootdse' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2221 NAME 'nsslapd-validate-cert' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2222 NAME 'nsslapd-localuser' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2223 NAME 'nsslapd-localhost' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2224 NAME 'nsslapd-port' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2225 NAME 'nsslapd-workingdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2226 NAME 'nsslapd-listenhost' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2227 NAME 'nsslapd-snmp-index' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2228 NAME 'nsslapd-ldapifilepath' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2229 NAME 'nsslapd-ldapilisten' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2230 NAME 'nsslapd-ldapiautobind' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2231 NAME 'nsslapd-ldapimaprootdn' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2232 NAME 'nsslapd-ldapimaptoentries' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2233 NAME 'nsslapd-ldapiuidnumbertype' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2234 NAME 'nsslapd-ldapigidnumbertype' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2235 NAME 'nsslapd-ldapientrysearchbase' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2236 NAME 'nsslapd-anonlimitsdn' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2237 NAME 'nsslapd-counters' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2238 NAME 'nsslapd-security' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2239 NAME 'nsslapd-SSL3ciphers' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2240 NAME 'nsslapd-accesslog' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2241 NAME 'nsslapd-errorlog' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2242 NAME 'nsslapd-securePort' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2243 NAME 'nsslapd-securelistenhost' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2244 NAME 'nnslapd-threadnumber' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2245 NAME 'nsslapd-maxthreadsperconn' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2246 NAME 'nsslapd-maxdescriptors' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2247 NAME 'nsslapd-conntablesize' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2248 NAME 'nsslapd-reservedescriptors' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2249 NAME 'nsslapd-idletimeout' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2250 NAME 'nsslapd-ioblocktimeout' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2251 NAME 'nsslapd-accesscontrol' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2252 NAME 'nsslapd-groupevalnestlevel' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2253 NAME 'nsslapd-nagle' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2254 NAME 'nsslapd-pwpolicy-local' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2255 NAME 'passwordIsGlobalPolicy' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2256 NAME 'passwordLegacyPolicy' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2257 NAME 'nsslapd-accesslog-logbuffering' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2258 NAME 'nsslapd-csnlogging' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2259 NAME 'nsslapd-return-exact-case' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2260 NAME 'nsslapd-result-tweak' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2261 NAME 'nsslapd-attribute-name-exceptions' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2262 NAME 'nsslapd-maxbersize' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2263 NAME 'nsslapd-maxsasliosize' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2264 NAME 'nsslapd-max-filter-nest-level' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2265 NAME 'nsslapd-versionstring' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2266 NAME 'nsslapd-enquote-sup-oc' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2267 NAME 'nsslapd-certmap-basedn' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2268 NAME 'nsslapd-accesslog-list' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2269 NAME 'nsslapd-errorlog-list' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2270 NAME 'nsslapd-auditlog-list' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2271 NAME 'nsslapd-rewrite-rfc1274' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2272 NAME 'nsslapd-plugin-binddn-tracking' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2273 NAME 'nsslapd-config' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2274 NAME 'nsslapd-instancedir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2275 NAME 'nsslapd-schemadir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2276 NAME 'nsslapd-lockdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2277 NAME 'nsslapd-tmpdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2278 NAME 'nsslapd-certdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2279 NAME 'nsslapd-ldifdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2280 NAME 'nsslapd-bakdir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2281 NAME 'nsslapd-saslpath' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2282 NAME 'nsslapd-rundir' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2283 NAME 'nsslapd-SSLclientAuth' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2284 NAME 'nsslapd-ssl-check-hostname' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2285 NAME 'nsslapd-hash-filters' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2286 NAME 'nsslapd-outbound-ldap-io-timeout' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2287 NAME 'nsslapd-force-sasl-external' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2288 NAME 'nsslapd-defaultnamingcontext' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.12 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2289 NAME 'nsslapd-disk-monitoring' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2290 NAME 'nsslapd-disk-monitoring-threshold' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2291 NAME 'nsslapd-disk-monitoring-grace-period' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2292 NAME 'nsslapd-disk-monitoring-logging-critical' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2293 NAME 'nsslapd-ndn-cache-enabled' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2294 NAME 'nsslapd-ndn-cache-max-size' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2295 NAME 'nsslapd-allowed-sasl-mechanisms' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2296 NAME 'nsslapd-ignore-virtual-attrs' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2297 NAME 'nsslapd-search-return-original-type-switch' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2298 NAME 'nsslapd-enable-turbo-mode' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2299 NAME 'nsslapd-connection-buffer' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2300 NAME 'nsslapd-connection-nocanon' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2301 NAME 'nsslapd-plugin-logging' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2302 NAME 'nsslapd-listen-backlog-size' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2303 NAME 'nsslapd-ignore-time-skew' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2304 NAME 'nsslapd-dynamic-plugins' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2305 NAME 'nsslapd-moddn-aci' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2306 NAME 'nsslapd-return-default-opattr' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 USAGE directoryOperation X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2307 NAME 'nsslapd-allow-hashed-passwords' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2308 NAME 'nstombstonecsn' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2309 NAME 'nsds5ReplicaPreciseTombstonePurging' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2310 NAME 'nsds5ReplicaFlowControlWindow' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2311 NAME 'nsds5ReplicaFlowControlPause' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2313 NAME 'nsslapd-changelogtrim-interval' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2314 NAME 'nsslapd-changelogcompactdb-interval' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2315 NAME 'nsDS5ReplicaWaitForAsyncResults' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
++attributeTypes: ( 2.16.840.1.113730.3.1.2333 NAME 'nsds5ReplicaReleaseTimeout' DESC 'Netscape defined attribute type' SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 SINGLE-VALUE X-ORIGIN 'Netscape Directory Server' )
+ #
+ # objectclasses
+ #
+@@ -164,7 +318,7 @@ objectClasses: ( 2.16.840.1.113730.3.2.44 NAME 'nsIndex' DESC 'Netscape defined
+ objectClasses: ( 2.16.840.1.113730.3.2.109 NAME 'nsBackendInstance' DESC 'Netscape defined objectclass' SUP top  MUST ( CN ) X-ORIGIN 'Netscape Directory Server' )
+ objectClasses: ( 2.16.840.1.113730.3.2.110 NAME 'nsMappingTree' DESC 'Netscape defined objectclass' SUP top  MUST ( CN ) X-ORIGIN 'Netscape Directory Server' )
+ objectClasses: ( 2.16.840.1.113730.3.2.104 NAME 'nsContainer' DESC 'Netscape defined objectclass' SUP top  MUST ( CN ) X-ORIGIN 'Netscape Directory Server' )
+-objectClasses: ( 2.16.840.1.113730.3.2.108 NAME 'nsDS5Replica' DESC 'Netscape defined objectclass' SUP top  MUST ( nsDS5ReplicaRoot $  nsDS5ReplicaId ) MAY (cn $ nsds5ReplicaCleanRUV $ nsds5ReplicaAbortCleanRUV $ nsDS5ReplicaType $ nsDS5ReplicaBindDN $ nsState $ nsDS5ReplicaName $ nsDS5Flags $ nsDS5Task $ nsDS5ReplicaReferral $ nsDS5ReplicaAutoReferral $ nsds5ReplicaPurgeDelay $ nsds5ReplicaTombstonePurgeInterval $ nsds5ReplicaChangeCount $ nsds5ReplicaLegacyConsumer) X-ORIGIN 'Netscape Directory Server' )
++objectClasses: ( 2.16.840.1.113730.3.2.108 NAME 'nsDS5Replica' DESC 'Netscape defined objectclass' SUP top  MUST ( nsDS5ReplicaRoot $  nsDS5ReplicaId ) MAY (cn $ nsds5ReplicaCleanRUV $ nsds5ReplicaAbortCleanRUV $ nsDS5ReplicaType $ nsDS5ReplicaBindDN $ nsState $ nsDS5ReplicaName $ nsDS5Flags $ nsDS5Task $ nsDS5ReplicaReferral $ nsDS5ReplicaAutoReferral $ nsds5ReplicaPurgeDelay $ nsds5ReplicaTombstonePurgeInterval $ nsds5ReplicaChangeCount $ nsds5ReplicaLegacyConsumer $ nsds5ReplicaReleaseTimeout) X-ORIGIN 'Netscape Directory Server' )
+ objectClasses: ( 2.16.840.1.113730.3.2.113 NAME 'nsTombstone' DESC 'Netscape defined objectclass' SUP top MAY ( nsParentUniqueId $ nscpEntryDN ) X-ORIGIN 'Netscape Directory Server' )
+ objectClasses: ( 2.16.840.1.113730.3.2.103 NAME 'nsDS5ReplicationAgreement' DESC 'Netscape defined objectclass' SUP top MUST ( cn ) MAY ( nsds5ReplicaCleanRUVNotified $ nsDS5ReplicaHost $ nsDS5ReplicaPort $ nsDS5ReplicaTransportInfo $ nsDS5ReplicaBindDN $ nsDS5ReplicaCredentials $ nsDS5ReplicaBindMethod $ nsDS5ReplicaRoot $ nsDS5ReplicatedAttributeList $ nsDS5ReplicatedAttributeListTotal $ nsDS5ReplicaUpdateSchedule $ nsds5BeginReplicaRefresh $ description $ nsds50ruv $ nsruvReplicaLastModified $ nsds5ReplicaTimeout $ nsds5replicaChangesSentSinceStartup $ nsds5replicaLastUpdateEnd $ nsds5replicaLastUpdateStart $ nsds5replicaLastUpdateStatus $ nsds5replicaUpdateInProgress $ nsds5replicaLastInitEnd $ nsds5ReplicaEnabled $ nsds5replicaLastInitStart $ nsds5replicaLastInitStatus $ nsds5debugreplicatimeout $ nsds5replicaBusyWaitTime $ nsds5ReplicaStripAttrs $ nsds5replicaSessionPauseTime  $ nsds5ReplicaFlowControlWindow $ nsds5ReplicaFlowControlPause ) X-ORIGIN 'Netscape Directory Server' )
+ objectClasses: ( 2.16.840.1.113730.3.2.39 NAME 'nsslapdConfig' DESC 'Netscape defined objectclass' SUP top MAY ( cn ) X-ORIGIN 'Netscape Directory Server' )
+diff --git a/ldap/servers/plugins/replication/repl5.h b/ldap/servers/plugins/replication/repl5.h
+index ee161ef..a521389 100644
+--- a/ldap/servers/plugins/replication/repl5.h
++++ b/ldap/servers/plugins/replication/repl5.h
+@@ -100,6 +100,10 @@
+ #define REPL_ABORT_CLEANRUV_OID "2.16.840.1.113730.3.6.6"
+ #define REPL_CLEANRUV_GET_MAXCSN_OID "2.16.840.1.113730.3.6.7"
+ #define REPL_CLEANRUV_CHECK_STATUS_OID "2.16.840.1.113730.3.6.8"
++#define REPL_ABORT_SESSION_OID "2.16.840.1.113730.3.6.9"
++#define SESSION_ACQUIRED 0
++#define ABORT_SESSION 1
++#define SESSION_ABORTED 2
+ 
+ #define CLEANRUV_ACCEPTED "accepted"
+ #define CLEANRUV_REJECTED "rejected"
+@@ -170,7 +174,7 @@ extern const char *type_nsds5ReplicaStripAttrs;
+ extern const char *type_nsds5ReplicaCleanRUVnotified;
+ extern const char *type_nsds5ReplicaFlowControlWindow;
+ extern const char *type_nsds5ReplicaFlowControlPause;
+-
++extern const char *type_replicaReleaseTimeout;
+ 
+ /* Attribute names for windows replication agreements */
+ extern const char *type_nsds7WindowsReplicaArea;
+@@ -523,9 +527,9 @@ Replica *replica_new_from_entry (Slapi_Entry *e, char *errortext, PRBool is_add_
+ void replica_destroy(void **arg);
+ int replica_subentry_update(Slapi_DN *repl_root, ReplicaId rid);
+ int replica_subentry_check(Slapi_DN *repl_root, ReplicaId rid);
+-PRBool replica_get_exclusive_access(Replica *r, PRBool *isInc, PRUint64 connid, int opid,
+-									const char *locking_purl,
+-									char **current_purl);
++PRBool replica_get_exclusive_access(Replica *r, PRBool *isInc, PRUint64 connid,
++                                    int opid, const char *locking_purl,
++                                    char **current_purl);
+ void replica_relinquish_exclusive_access(Replica *r, PRUint64 connid, int opid);
+ PRBool replica_get_tombstone_reap_active(const Replica *r);
+ const Slapi_DN *replica_get_root(const Replica *r);
+@@ -589,7 +593,11 @@ void replica_set_ruv_dirty (Replica *r);
+ int replica_write_ruv (Replica *r);
+ char *replica_get_dn(Replica *r);
+ void replica_check_for_tasks(Replica*r, Slapi_Entry *e);
++PRUint64 replica_get_release_timeout(Replica *r);
++void replica_set_release_timeout(Replica *r, PRUint64 timeout);
++void replica_set_groupdn_checkinterval(Replica *r, int timeout);
+ PRBool ignore_error_and_keep_going(int error);
++void replica_check_release_timeout(Replica *r, Slapi_PBlock *pb);
+ 
+ /* The functions below handles the state flag */
+ /* Current internal state flags */
+diff --git a/ldap/servers/plugins/replication/repl5_inc_protocol.c b/ldap/servers/plugins/replication/repl5_inc_protocol.c
+index 02b54b3..e6920e8 100644
+--- a/ldap/servers/plugins/replication/repl5_inc_protocol.c
++++ b/ldap/servers/plugins/replication/repl5_inc_protocol.c
+@@ -65,6 +65,11 @@ Perhaps these events should be properties of the main protocol.
+ #include "repl5_prot_private.h"
+ #include "cl5_api.h"
+ 
++#include "repl5.h"
++#include "repl5_prot_private.h"
++#include "cl5_api.h"
++#include "slapi-plugin.h"
++
+ extern int slapi_log_urp;
+ 
+ /*** from proto-slap.h ***/
+@@ -110,6 +115,7 @@ typedef struct result_data
+ 	int last_message_id_received;
+ 	int flowcontrol_detection;
+ 	int result; /* The UPDATE_TRANSIENT_ERROR etc */
++	time_t abort_time;
+ } result_data;
+ 
+ /* Various states the incremental protocol can pass through */
+@@ -149,6 +155,7 @@ typedef struct result_data
+ #define EXAMINE_RUV_PARAM_ERROR 405
+ 
+ #define MAX_CHANGES_PER_SESSION	10000
++
+ /*
+  * Maximum time to wait between replication sessions. If we
+  * don't see any updates for a period equal to this interval,
+@@ -268,19 +275,21 @@ static void repl5_inc_result_threadmain(void *param)
+ 	Repl_Connection *conn = rd->prp->conn;
+ 	int finished = 0;
+ 	int message_id = 0;
++	int yield_session = 0;
+ 
+ 	slapi_log_error(SLAPI_LOG_REPL, NULL, "repl5_inc_result_threadmain starting\n");
+ 	while (!finished) 
+ 	{
++		LDAPControl **returned_controls = NULL;
+ 		repl5_inc_operation *op = NULL;
+-		int connection_error = 0;
++		ReplicaId replica_id = 0;
+ 		char *csn_str = NULL; 
+ 		char *uniqueid = NULL;
+-		ReplicaId replica_id = 0;
+-		int operation_code = 0;
+ 		char *ldap_error_string = NULL;
+ 		time_t time_now = 0;
+ 		time_t start_time = time( NULL );
++		int connection_error = 0;
++		int operation_code = 0;
+ 		int backoff_time = 1;
+ 
+ 		/* Read the next result */
+@@ -292,7 +301,7 @@ static void repl5_inc_result_threadmain(void *param)
+ 
+ 		while (!finished)
+ 		{
+-			conres = conn_read_result_ex(conn, NULL, NULL, NULL, LDAP_RES_ANY, &message_id, 0);
++			conres = conn_read_result_ex(conn, NULL, NULL, &returned_controls, LDAP_RES_ANY, &message_id, 0);
+ 			slapi_log_error(SLAPI_LOG_REPL, NULL, "repl5_inc_result_threadmain: read result for message_id %d\n", message_id);
+ 			/* Timeout here means that we didn't block, not a real timeout */
+ 			if (CONN_TIMEOUT == conres)
+@@ -320,9 +329,19 @@ static void repl5_inc_result_threadmain(void *param)
+ 					finished = 1;
+ 				}
+ 				PR_Unlock(rd->lock);
+-			} else
+-			{
+-				/* Something other than a timeout, so we exit the loop */
++			} else {
++				/*
++				 * Something other than a timeout, so we exit the loop.
++				 * First check if we were told to abort the session
++				 */;
++				Replica *r = (Replica*)object_get_data(rd->prp->replica_object);
++				if (replica_get_release_timeout(r) &&
++				    slapi_control_present(returned_controls,
++				                          REPL_ABORT_SESSION_OID,
++				                          NULL, NULL))
++				{
++					yield_session = 1;
++				}
+ 				break;
+ 			}
+ 		}
+@@ -346,21 +365,29 @@ static void repl5_inc_result_threadmain(void *param)
+ 			}
+ 
+ 			conn_get_error_ex(conn, &operation_code, &connection_error, &ldap_error_string);
+-			slapi_log_error(SLAPI_LOG_REPL, NULL, "repl5_inc_result_threadmain: result %d, %d, %d, %d, %s\n", operation_code,connection_error,conres,message_id,ldap_error_string);
+-			return_value = repl5_inc_update_from_op_result(rd->prp, conres, connection_error, csn_str, uniqueid, replica_id, &should_finish, &(rd->num_changes_sent));
++			slapi_log_error(SLAPI_LOG_REPL, NULL,
++			                "repl5_inc_result_threadmain: result %d, %d, %d, %d, %s\n",
++			                operation_code,connection_error,conres,message_id,ldap_error_string);
++			return_value = repl5_inc_update_from_op_result(rd->prp, conres, connection_error,
++			                                               csn_str, uniqueid, replica_id, &should_finish,
++			                                               &(rd->num_changes_sent));
+ 			if (return_value || should_finish)
+ 			{
+-				slapi_log_error(SLAPI_LOG_REPL, NULL, "repl5_inc_result_threadmain: got op result %d should finish %d\n", return_value, should_finish);
++				slapi_log_error(SLAPI_LOG_REPL, NULL,
++				                "repl5_inc_result_threadmain: got op result %d should finish %d\n",
++				                return_value, should_finish);
+ 				/* If so then we need to take steps to abort the update process */
+ 				PR_Lock(rd->lock);
+ 				rd->result = return_value;
+-				rd->abort = 1;
++				rd->abort = ABORT_SESSION;
+ 				PR_Unlock(rd->lock);
+-				/* We also need to log the error, including details stored from when the operation was sent */
+-				/* we cannot finish yet - we still need to waitfor the pending results, then
+-				   the main repl code will shut down this thread */
+-				/* we can finish if we have disconnected - in that case, there will be nothing
+-				   to read */
++				/*
++				 * We also need to log the error, including details stored from
++				 * when the operation was sent.  We cannot finish yet - we still
++				 * need to wait for the pending results, then the main repl code
++				 * will shut down this thread.  We can finish if we have
++				 * disconnected - in that case, there will be nothing to read
++				 */
+ 				if (return_value == UPDATE_CONNECTION_LOST) {
+ 					finished = 1;
+ 				}
+@@ -369,8 +396,16 @@ static void repl5_inc_result_threadmain(void *param)
+ 				rd->result = return_value;
+ 			}
+ 		}
++
+ 		/* Should we stop ? */
+ 		PR_Lock(rd->lock);
++		if (!finished && yield_session && rd->abort != SESSION_ABORTED && rd->abort_time == 0) {
++			rd->abort_time = time( NULL );
++			rd->abort = SESSION_ABORTED;  /* only set the abort time once */
++			slapi_log_error(SLAPI_LOG_REPL, "repl5_inc_result_threadmain",
++			                "Abort control detected, setting abort time...(%s)\n",
++			                agmt_get_long_name(rd->prp->agmt));
++		}
+ 		if (rd->stop_result_thread) 
+ 		{
+ 			finished = 1;
+@@ -497,8 +532,7 @@ repl5_inc_waitfor_async_results(result_data *rd)
+ 		{
+ 			/* If so then we're done */
+ 			done = 1;
+-		}
+-		if (rd->abort && (rd->result == UPDATE_CONNECTION_LOST))
++		} else if (rd->abort && (rd->result == UPDATE_CONNECTION_LOST))
+ 		{
+ 			done = 1; /* no connection == no more results */
+ 		}
+@@ -877,7 +911,7 @@ repl5_inc_run(Private_Repl_Protocol *prp)
+                   if (!busywaittime){
+                       busywaittime = PROTOCOL_BUSY_BACKOFF_MINIMUM;
+                   }
+-                  prp_priv->backoff = backoff_new(BACKOFF_FIXED, busywaittime, busywaittime);
++                  prp_priv->backoff = backoff_new(BACKOFF_FIXED, busywaittime , busywaittime);
+               } else {
+                   prp_priv->backoff = backoff_new(BACKOFF_EXPONENTIAL, PROTOCOL_BACKOFF_MINIMUM,
+ 					                              PROTOCOL_BACKOFF_MAXIMUM);
+@@ -1075,6 +1109,7 @@ repl5_inc_run(Private_Repl_Protocol *prp)
+                       } else if (rc == UPDATE_YIELD){
+                           dev_debug("repl5_inc_run(STATE_SENDING_UPDATES) -> send_updates = UPDATE_YIELD -> STATE_BACKOFF_START");
+                           agmt_set_last_update_status(prp->agmt, 0, 0, "Incremental update succeeded and yielded");
++                          use_busy_backoff_timer = PR_TRUE;
+                           next_state = STATE_BACKOFF_START;
+                       } else if (rc == UPDATE_TRANSIENT_ERROR){
+                           dev_debug("repl5_inc_run(STATE_SENDING_UPDATES) -> send_updates = UPDATE_TRANSIENT_ERROR -> STATE_BACKOFF_START");
+@@ -1110,6 +1145,7 @@ repl5_inc_run(Private_Repl_Protocol *prp)
+           agmt_set_last_update_end(prp->agmt, current_time());
+           agmt_set_update_in_progress(prp->agmt, PR_FALSE);
+           agmt_update_done(prp->agmt, 0);
++
+           /* If timed out, close the connection after released the replica */
+           release_replica(prp);
+           if (rc == UPDATE_TIMEOUT) {
+@@ -1697,12 +1733,14 @@ send_updates(Private_Repl_Protocol *prp, RUV *remote_update_vector, PRUint32 *nu
+ 	}
+ 	else
+ 	{
+-		int finished = 0;
+ 		ConnResult replay_crc;
+-		char csn_str[CSN_STRSIZE];
++		Replica *replica = (Replica*) object_get_data(prp->replica_object);
+ 		PRBool subentry_update_needed = PR_FALSE;
++		PRUint64 release_timeout = replica_get_release_timeout(replica);
++		char csn_str[CSN_STRSIZE];
+ 		int skipped_updates = 0;
+ 		int fractional_repl;
++		int finished = 0;
+ #define FRACTIONAL_SKIPPED_THRESHOLD 100
+ 
+ 		/* Start the results reading thread */
+@@ -1922,7 +1960,20 @@ send_updates(Private_Repl_Protocol *prp, RUV *remote_update_vector, PRUint32 *nu
+ 			}
+ 			PR_Lock(rd->lock);
+ 			/* See if the result thread has hit a problem */
+-			if (!finished && rd->abort)
++
++			if(!finished && rd->abort_time){
++				time_t current_time = time ( NULL );
++				if ((current_time - rd->abort_time) >= release_timeout){
++					rd->result = UPDATE_YIELD;
++					return_value = UPDATE_YIELD;
++					finished = 1;
++					slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
++					                "Aborting send_updates...(%s)\n",
++					                agmt_get_long_name(rd->prp->agmt));
++				}
++			}
++
++			if (!finished && rd->abort == ABORT_SESSION)
+ 			{
+ 				return_value = rd->result;
+ 				finished = 1;
+@@ -1932,9 +1983,9 @@ send_updates(Private_Repl_Protocol *prp, RUV *remote_update_vector, PRUint32 *nu
+ 
+ 		if (fractional_repl && subentry_update_needed)
+ 		{
+-			Replica *replica;
+ 			ReplicaId rid = -1; /* Used to create the replica keep alive subentry */
+ 			replica = (Replica*) object_get_data(prp->replica_object);
++
+ 			if (replica)
+ 			{
+ 				rid = replica_get_rid(replica);
+@@ -1953,7 +2004,7 @@ send_updates(Private_Repl_Protocol *prp, RUV *remote_update_vector, PRUint32 *nu
+ 				 * If we already have an error, there is no need to check the
+ 				 * async result thread anymore.
+ 				 */
+-				if (return_value == UPDATE_NO_MORE_UPDATES)
++				if (return_value == UPDATE_NO_MORE_UPDATES || return_value == UPDATE_YIELD)
+ 				{
+ 					/*
+ 					 * We need to double check that an error hasn't popped up from
+diff --git a/ldap/servers/plugins/replication/repl5_plugins.c b/ldap/servers/plugins/replication/repl5_plugins.c
+index 7127395..2a7abb1 100644
+--- a/ldap/servers/plugins/replication/repl5_plugins.c
++++ b/ldap/servers/plugins/replication/repl5_plugins.c
+@@ -1017,6 +1017,8 @@ write_changelog_and_ruv (Slapi_PBlock *pb)
+ 	r = (Replica*)object_get_data (repl_obj);
+ 	PR_ASSERT (r);
+ 
++	replica_check_release_timeout(r, pb);
++
+ 	if (replica_is_flag_set (r, REPLICA_LOG_CHANGES) &&
+ 		(cl5GetState () == CL5_STATE_OPEN))
+ 	{
+@@ -1292,7 +1294,6 @@ process_postop (Slapi_PBlock *pb)
+ 	return rc;
+ }
+ 
+-
+ /*
+  * Cancel an operation CSN. This removes it from any CSN pending lists.
+  * This function is called when a previously-generated CSN will not
+diff --git a/ldap/servers/plugins/replication/repl5_replica.c b/ldap/servers/plugins/replication/repl5_replica.c
+index ceeeaee..9f85928 100644
+--- a/ldap/servers/plugins/replication/repl5_replica.c
++++ b/ldap/servers/plugins/replication/repl5_replica.c
+@@ -53,8 +53,8 @@
+ #define RUV_SAVE_INTERVAL (30 * 1000) /* 30 seconds */
+ #define START_UPDATE_DELAY 2 /* 2 second */
+ 
+-#define REPLICA_RDN				 "cn=replica"
+-#define CHANGELOG_RDN            "cn=legacy changelog"
++#define REPLICA_RDN "cn=replica"
++#define CHANGELOG_RDN "cn=legacy changelog"
+ 
+ /*
+  * A replica is a locally-held copy of a portion of the DIT.
+@@ -88,6 +88,8 @@ struct replica {
+ 	PRBool state_update_inprogress; /* replica state is being updated */
+ 	PRLock *agmt_lock;          /* protects agreement creation, start and stop */
+ 	char *locking_purl;			/* supplier who has exclusive access */
++	Slapi_Counter *release_timeout;		/* The amount of time to wait before releasing active replica */
++	PRUint64 abort_session;			/* Abort the current replica session */
+ };
+ 
+ 
+@@ -208,6 +210,8 @@ replica_new_from_entry (Slapi_Entry *e, char *errortext, PRBool is_add_operation
+ 		goto done;
+ 	}
+ 
++	r->release_timeout = slapi_counter_new();
++
+     /* read parameters from the replica config entry */
+     rc = _replica_init_from_config (r, e, errortext);
+     if (rc != 0)
+@@ -395,6 +399,7 @@ replica_destroy(void **arg)
+ 		csnplFree(&r->min_csn_pl);;
+ 	}
+ 
++	slapi_counter_destroy(&r->release_timeout);
+ 	slapi_ch_free((void **)arg);
+ }
+ 
+@@ -569,8 +574,7 @@ replica_subentry_update(Slapi_DN *repl_root, ReplicaId rid)
+  */
+ PRBool
+ replica_get_exclusive_access(Replica *r, PRBool *isInc, PRUint64 connid, int opid,
+-							 const char *locking_purl,
+-							 char **current_purl)
++							 const char *locking_purl, char **current_purl)
+ {
+ 	PRBool rval = PR_TRUE;
+ 
+@@ -593,6 +597,15 @@ replica_get_exclusive_access(Replica *r, PRBool *isInc, PRUint64 connid, int opi
+ 		{
+ 			*current_purl = slapi_ch_strdup(r->locking_purl);
+ 		}
++		if (!(r->repl_state_flags & REPLICA_TOTAL_IN_PROGRESS) &&
++		    replica_get_release_timeout(r))
++		{
++			/*
++			 * We are not doing a total update, so abort the current session
++			 * so other replicas can acquire this server.
++			 */
++			r->abort_session = ABORT_SESSION;
++		}
+ 	}
+ 	else
+ 	{
+@@ -601,14 +614,17 @@ replica_get_exclusive_access(Replica *r, PRBool *isInc, PRUint64 connid, int opi
+ 						connid, opid,
+ 						slapi_sdn_get_dn(r->repl_root));
+ 		r->repl_state_flags |= REPLICA_IN_USE;
++		r->abort_session = SESSION_ACQUIRED;
+ 		if (isInc && *isInc) 
+ 		{
+ 			r->repl_state_flags |= REPLICA_INCREMENTAL_IN_PROGRESS;
+ 		}
+ 		else
+ 		{ 
+-			/* if connid or opid != 0, it's a total update */
+-			/* Both set to 0 means we're disabling replication */
++			/*
++			 * If connid or opid != 0, it's a total update.
++			 * Both set to 0 means we're disabling replication
++			 */
+ 			if (connid || opid)
+ 			{
+ 				r->repl_state_flags |= REPLICA_TOTAL_IN_PROGRESS;
+@@ -636,13 +652,13 @@ replica_relinquish_exclusive_access(Replica *r, PRUint64 connid, int opid)
+ 	/* check to see if the replica is in use and log a warning if not */
+ 	if (!(r->repl_state_flags & REPLICA_IN_USE))
+ 	{
+-        slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name, 
++		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
+ 					"conn=%" NSPRIu64 " op=%d repl=\"%s\": "
+ 					"Replica not in use\n",
+ 					connid, opid,
+ 					slapi_sdn_get_dn(r->repl_root));
+ 	} else {
+-		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name, 
++		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
+ 					"conn=%" NSPRIu64 " op=%d repl=\"%s\": "
+ 					"Released replica held by locking_purl=%s\n",
+ 					connid, opid,
+@@ -944,6 +960,24 @@ replica_get_type (const Replica *r)
+ 	return r->repl_type;
+ }
+ 
++PRUint64
++replica_get_release_timeout(Replica *r)
++{
++	if(r){
++		return slapi_counter_get_value(r->release_timeout);
++	} else {
++		return 0;
++	}
++}
++
++void
++replica_set_release_timeout(Replica *r, PRUint64 limit)
++{
++	if(r){
++		slapi_counter_set_value(r->release_timeout, limit);
++	}
++}
++
+ /* 
+  * Sets the replica type.
+  */
+@@ -1022,13 +1056,9 @@ replica_get_legacy_purl (const Replica *r)
+ {
+     char *purl;
+ 
+-    PR_Lock (r->repl_lock);
+-
+-    PR_ASSERT (r->legacy_consumer);
+-
+-    purl = slapi_ch_strdup (r->legacy_purl);
+-
+-    PR_Unlock (r->repl_lock);
++    replica_lock(r->repl_lock);
++    purl = slapi_ch_strdup(r->legacy_purl);
++    replica_unlock(r->repl_lock);
+ 
+     return purl;
+ }
+@@ -1787,6 +1817,7 @@ _replica_init_from_config (Replica *r, Slapi_Entry *e, char *errortext)
+     char buf [SLAPI_DSE_RETURNTEXT_SIZE];
+     char *errormsg = errortext? errortext : buf;
+ 	Slapi_Attr *a = NULL;
++    int release_timeout = 0;
+ 
+ 	PR_ASSERT (r && e);
+ 
+@@ -1833,9 +1864,13 @@ _replica_init_from_config (Replica *r, Slapi_Entry *e, char *errortext)
+ 
+         slapi_ch_free ((void**)&val);
+     }
+-    else
+-    {
+-        r->legacy_consumer = PR_FALSE;
++
++    /* Get the release timeout */
++    release_timeout = slapi_entry_attr_get_int(e, type_replicaReleaseTimeout);
++    if(release_timeout <= 0){
++        slapi_counter_set_value(r->release_timeout, 0);
++    } else {
++        slapi_counter_set_value(r->release_timeout, release_timeout);
+     }
+ 
+     /* get replica flags */
+@@ -3829,21 +3864,21 @@ replica_disable_replication (Replica *r, Object *r_obj)
+ 	ruv_get_first_id_and_purl(repl_ruv, &junkrid, &p_locking_purl);
+ 	locking_purl = slapi_ch_strdup(p_locking_purl);
+ 	p_locking_purl = NULL;
+-	repl_ruv = NULL;	
+-    while (!replica_get_exclusive_access(r, &isInc, 0, 0, "replica_disable_replication",
++	repl_ruv = NULL;
++	while (!replica_get_exclusive_access(r, &isInc, 0, 0, "replica_disable_replication",
+ 										 &current_purl)) {
+-        if (!isInc) /* already locked, but not by inc update - break */
+-            break;
+-        isInc = PR_FALSE;
+-        slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
++		if (!isInc) /* already locked, but not by inc update - break */
++			break;
++		isInc = PR_FALSE;
++		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
+ 						"replica_disable_replication: "
+ 						"replica %s is already locked by (%s) for incoming "
+ 						"incremental update; sleeping 100ms\n",
+-                        slapi_sdn_get_ndn (replica_get_root (r)),
++						slapi_sdn_get_ndn (replica_get_root (r)),
+ 						current_purl ? current_purl : "unknown");
+ 		slapi_ch_free_string(&current_purl);
+-        DS_Sleep(PR_MillisecondsToInterval(100));
+-    }
++		DS_Sleep(PR_MillisecondsToInterval(100));
++	}
+ 
+ 	slapi_ch_free_string(&current_purl);
+ 	slapi_ch_free_string(&locking_purl);
+@@ -4003,3 +4038,57 @@ replica_get_attr ( Slapi_PBlock *pb, const char* type, void *value )
+ 
+ 	return rc;
+ }
++
++/*
++ * Add the "Abort Replication Session" control to the pblock
++ */
++static void
++replica_add_session_abort_control(Slapi_PBlock *pb)
++{
++	LDAPControl ctrl = {0};
++	BerElement *ber;
++	struct berval *bvp;
++	int rc;
++
++	/* Build the BER payload */
++	if ( (ber = der_alloc()) == NULL ) {
++		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
++			"add_session_abort_control: Failed to create ber\n");
++		return;
++	}
++	rc = ber_printf( ber, "{}");
++	if (rc != -1) {
++		rc = ber_flatten( ber, &bvp );
++	}
++	ber_free( ber, 1 );
++	if ( rc == -1 ) {
++		slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
++			"add_session_abort_control: Failed to flatten ber\n");
++		return;
++	}
++
++	ctrl.ldctl_oid = slapi_ch_strdup( REPL_ABORT_SESSION_OID );
++	ctrl.ldctl_value = *bvp;
++	bvp->bv_val = NULL;
++	ber_bvfree( bvp );
++	slapi_pblock_set(pb, SLAPI_ADD_RESCONTROL, &ctrl);
++
++	slapi_log_error(SLAPI_LOG_REPL, repl_plugin_name,
++		"add_session_abort_control: abort control successfully added to result\n");
++}
++
++/*
++ * Check if we have exceeded the failed replica acquire limit,
++ * if so, end the replication session.
++ */
++void
++replica_check_release_timeout(Replica *r, Slapi_PBlock *pb)
++{
++	replica_lock(r->repl_lock);
++	if(r->abort_session  == ABORT_SESSION){
++		/* Need to abort this session (just send the control once) */
++		replica_add_session_abort_control(pb);
++		r->abort_session = SESSION_ABORTED;
++	}
++	replica_unlock(r->repl_lock);
++}
+diff --git a/ldap/servers/plugins/replication/repl5_replica_config.c b/ldap/servers/plugins/replication/repl5_replica_config.c
+index 68b3ce5..f8db8e8 100644
+--- a/ldap/servers/plugins/replication/repl5_replica_config.c
++++ b/ldap/servers/plugins/replication/repl5_replica_config.c
+@@ -399,6 +399,11 @@ replica_config_modify (Slapi_PBlock *pb, Slapi_Entry* entryBefore, Slapi_Entry*
+                     /* only allow the deletion of the cleanAllRUV config attributes */
+                     continue;
+                 }
++                else if (strcasecmp (config_attr, type_replicaReleaseTimeout) == 0 )
++                {
++                    if (apply_mods)
++                        replica_set_release_timeout(r, 0);
++                    }
+                 else
+                 {
+                     *returncode = LDAP_UNWILLING_TO_PERFORM;
+@@ -488,6 +493,23 @@ replica_config_modify (Slapi_PBlock *pb, Slapi_Entry* entryBefore, Slapi_Entry*
+                 {
+                     *returncode = LDAP_SUCCESS;
+                 }
++                else if (strcasecmp (config_attr, type_replicaReleaseTimeout) == 0 )
++                {
++                    if (apply_mods)
++                    {
++                        PRUint64 val = atoll(config_attr_value);
++
++                        if(val < 0){
++                            *returncode = LDAP_UNWILLING_TO_PERFORM;
++                            PR_snprintf (errortext, SLAPI_DSE_RETURNTEXT_SIZE,
++                                    "attribute %s value (%s) is invalid, must be a number zero or greater.\n",
++                                    config_attr, config_attr_value);
++                            slapi_log_error(SLAPI_LOG_FATAL, repl_plugin_name, "replica_config_modify: %s\n", errortext);
++                            break;
++                        }
++                        replica_set_release_timeout(r, val);
++                    }
++                }
+                 else
+                 {
+                     *returncode = LDAP_UNWILLING_TO_PERFORM;
+diff --git a/ldap/servers/plugins/replication/repl_globals.c b/ldap/servers/plugins/replication/repl_globals.c
+index bfcff03..1d35241 100644
+--- a/ldap/servers/plugins/replication/repl_globals.c
++++ b/ldap/servers/plugins/replication/repl_globals.c
+@@ -112,6 +112,7 @@ const char *type_replicaLegacyConsumer = "nsds5ReplicaLegacyConsumer";
+ const char *type_ruvElementUpdatetime = "nsruvReplicaLastModified";
+ const char *type_replicaCleanRUV = "nsds5ReplicaCleanRUV";
+ const char *type_replicaAbortCleanRUV = "nsds5ReplicaAbortCleanRUV";
++const char *type_replicaReleaseTimeout = "nsds5ReplicaReleaseTimeout";
+ 
+ /* Attribute names for replication agreement attributes */
+ const char *type_nsds5ReplicaHost = "nsds5ReplicaHost";
+-- 
+2.4.11
+

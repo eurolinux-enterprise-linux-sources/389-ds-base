@@ -1,0 +1,44 @@
+From fd424b4e5e517b7ff175abe3f00bb2e33ae399c7 Mon Sep 17 00:00:00 2001
+From: Noriko Hosoi <nhosoi@redhat.com>
+Date: Wed, 27 Jul 2016 09:50:27 -0700
+Subject: [PATCH] Ticket 48636 - Fix backporting errors
+
+Description: replica_lock/unlock pair is not ported to this version. (DS 47781)
+(cherry picked from commit 6dbad429d00416dde2006f5af62eb63d41360992)
+---
+ ldap/servers/plugins/replication/repl5_replica.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/ldap/servers/plugins/replication/repl5_replica.c b/ldap/servers/plugins/replication/repl5_replica.c
+index 9f85928..d25d00d 100644
+--- a/ldap/servers/plugins/replication/repl5_replica.c
++++ b/ldap/servers/plugins/replication/repl5_replica.c
+@@ -1056,9 +1056,9 @@ replica_get_legacy_purl (const Replica *r)
+ {
+     char *purl;
+ 
+-    replica_lock(r->repl_lock);
++    PR_Lock(r->repl_lock);
+     purl = slapi_ch_strdup(r->legacy_purl);
+-    replica_unlock(r->repl_lock);
++    PR_Unlock(r->repl_lock);
+ 
+     return purl;
+ }
+@@ -4084,11 +4084,11 @@ replica_add_session_abort_control(Slapi_PBlock *pb)
+ void
+ replica_check_release_timeout(Replica *r, Slapi_PBlock *pb)
+ {
+-	replica_lock(r->repl_lock);
++	PR_Lock(r->repl_lock);
+ 	if(r->abort_session  == ABORT_SESSION){
+ 		/* Need to abort this session (just send the control once) */
+ 		replica_add_session_abort_control(pb);
+ 		r->abort_session = SESSION_ABORTED;
+ 	}
+-	replica_unlock(r->repl_lock);
++	PR_Unlock(r->repl_lock);
+ }
+-- 
+2.4.11
+

@@ -1,0 +1,55 @@
+From ad893d0baeeb7ce6b5931234b5d90b7794ce2e9c Mon Sep 17 00:00:00 2001
+From: Viktor Ashirov <vashirov@redhat.com>
+Date: Tue, 22 Nov 2016 08:18:52 +0100
+Subject: [PATCH 425/425] Ticket 49049 - Fix error_log path in defaults.inf for
+ 1.2.11
+
+Bug Description:
+error_log points to non-existent file
+
+Fix Description:
+Correct error_log path so it points to correct file
+
+https://fedorahosted.org/389/ticket/49049
+
+Reviewed by: mreynolds (Thanks!)
+
+(cherry picked from commit 66f0aa818a88ccb506d96520774cf0e240741eaa)
+---
+ ldap/admin/src/defaults.inf.in | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/ldap/admin/src/defaults.inf.in b/ldap/admin/src/defaults.inf.in
+index e4ce74a..8f9b070 100644
+--- a/ldap/admin/src/defaults.inf.in
++++ b/ldap/admin/src/defaults.inf.in
+@@ -21,6 +21,8 @@ product = @capbrand@ Directory Server
+ version = @PACKAGE_VERSION@
+ ; In 1.2.xx, this will never be true.
+ asan_enabled = false
++with_selinux = @with_selinux@
++with_systemd = false
+ prefix = @prefixdir@
+ bin_dir = @bindir@
+ sbin_dir = @sbindir@
+@@ -32,6 +34,7 @@ initconfig_dir = @initconfigdir@
+ config_dir = @instconfigdir@/slapd-{instance_name}
+ local_state_dir = @localstatedir@
+ run_dir = @localstatedir@/run/dirsrv
++pid_file = @localstatedir@/run/dirsrv/slapd-{instance_name}.pid
+ plugin_dir = @serverplugindir@
+ 
+ ; These values can be altered in an installation of ds
+@@ -44,6 +47,9 @@ cert_dir = @instconfigdir@/slapd-{instance_name}
+ 
+ lock_dir = @localstatedir@/lock/dirsrv/slapd-{instance_name}
+ log_dir = @localstatedir@/log/dirsrv/slapd-{instance_name}
++access_log = @localstatedir@/log/dirsrv/slapd-{instance_name}/access
++audit_log = @localstatedir@/log/dirsrv/slapd-{instance_name}/audit
++error_log = @localstatedir@/log/dirsrv/slapd-{instance_name}/errors
+ inst_dir = @localstatedir@/lib/dirsrv/slapd-{instance_name}
+ db_dir = @localstatedir@/lib/dirsrv/slapd-{instance_name}/db
+ backup_dir = @localstatedir@/lib/dirsrv/slapd-{instance_name}/bak
+-- 
+2.9.3
+
