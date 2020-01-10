@@ -22,7 +22,7 @@
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.2.11.15
-Release:          %{?relprefix}94%{?prerel}%{?dist}
+Release:          %{?relprefix}95%{?prerel}%{?dist}
 License:          GPLv2 with exceptions
 URL:              http://www.port389.org/
 Group:            System Environment/Daemons
@@ -540,6 +540,7 @@ Patch432:         0432-fix-for-cve-2017-2668-simple-return-text-if-suffix-n.patc
 Patch433:         0433-Ticket-49545-final-substring-extended-filter-search-.patch
 Patch434:         0434-Ticket-49471-heap-buffer-overflow-in-ss_unescape.patch
 Patch435:         0435-Bug-1525628-CVE-2017-15135-Authentication-bypass-due.patch
+Patch436:         0436-CVE-2018-1089-crash-in-long-search-filter.patch 
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -1022,6 +1023,7 @@ cp %{SOURCE1} README.devel
 %patch433 -p1
 %patch434 -p1
 %patch435 -p1
+%patch436 -p1
 
 %build
 %if %{use_openldap}
@@ -1163,6 +1165,10 @@ fi
 %{_libdir}/%{pkgname}/libslapd.so.*
 
 %changelog
+* Thu Apr 12 2018 Mark Reynolds <mreynolds@redhat.com> - 1.2.11.15-95
+- Bump version to 1.2.11-15-95
+- Resolves: Bug 1562152 - EMBARGOED CVE-2018-1089 389-ds-base: ns-slapd crash via large filter value in ldapsearch
+
 * Mon Feb 26 2018 Mark Reynolds <mreynolds@redhat.com> - 1.2.11-15-94
 - Release 1.2.11.15-94
 - Resolves: Bug 1544415 - CVE-2017-15135 389-ds-base: Authentication bypass due to lack of size check in slapi_ct_memcmp function in ch_malloc.c (fix cherry-pick error)
