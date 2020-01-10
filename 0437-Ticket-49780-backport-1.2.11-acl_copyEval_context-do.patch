@@ -1,0 +1,264 @@
+From 85199121ea92e707203ea365bd4d87edfa89e40d Mon Sep 17 00:00:00 2001
+From: Ludwig Krispenz <lkrispen@redhat.com>
+Date: Thu, 12 Jul 2018 11:30:13 +0200
+Subject: [PATCH] Ticket 49780 - (backport 1.2.11) acl_copyEval_context double
+ free
+
+Bug: There is a connection an operation extension to keep evaluation
+     results cached across multiple operations.
+     In the geteffective for each evaluation a sepatate temporary connection
+     extension is created and freed. If there are several concurrent operations
+     in one connection the operation extension destructor can try to access
+     an already freed connection extension.
+
+Fix: Do not free the connectcion extension during the life time of a
+     connection. If a temporary extension should be used, lock the connection extension,
+     copy the content  to a saved structure and copy the temporary data to the
+     connection extension. When done with the temporary extension reverse this.
+     To make this work the locks need to be directly created, the use of the limited
+     preallocated array of locks could lead to a situation where both the main and
+     the temporary extension would get the sam elock assigned.
+
+Reviewed by: Mark, Thierry, thanks
+---
+ ldap/servers/plugins/acl/acl.h                |  2 -
+ ldap/servers/plugins/acl/acl_ext.c            | 52 +--------------
+ ldap/servers/plugins/acl/acleffectiverights.c | 65 +++++++++++++++----
+ ldap/servers/plugins/acl/aclinit.c            |  7 --
+ 4 files changed, 55 insertions(+), 71 deletions(-)
+
+diff --git a/ldap/servers/plugins/acl/acl.h b/ldap/servers/plugins/acl/acl.h
+index 693017269..ff0435a34 100644
+--- a/ldap/servers/plugins/acl/acl.h
++++ b/ldap/servers/plugins/acl/acl.h
+@@ -837,8 +837,6 @@ int 		acl_create_aclpb_pool ();
+ void        acl_destroy_aclpb_pool ();
+ int			acl_skip_access_check ( Slapi_PBlock *pb,  Slapi_Entry *e );
+ 
+-int			aclext_alloc_lockarray ();
+-
+ int			aclutil_str_append(char **str1, const char *str2);
+ void		aclutil_print_err (int rv , const Slapi_DN *sdn,
+ 			const struct berval* val, char **errbuf);
+diff --git a/ldap/servers/plugins/acl/acl_ext.c b/ldap/servers/plugins/acl/acl_ext.c
+index 94188c94a..77312527e 100644
+--- a/ldap/servers/plugins/acl/acl_ext.c
++++ b/ldap/servers/plugins/acl/acl_ext.c
+@@ -51,7 +51,6 @@ static Acl_PBlock * acl__get_aclpb_from_pool ( );
+ static int acl__put_aclpb_back_to_pool ( Acl_PBlock *aclpb );
+ static Acl_PBlock * acl__malloc_aclpb ( );
+ static void acl__free_aclpb ( Acl_PBlock **aclpb_ptr);
+-static PRLock *aclext_get_lock ();
+ 
+ 
+ struct acl_pbqueue {
+@@ -135,52 +134,6 @@ acl_set_ext (ext_type type, void *object, void *data)
+ 	}
+ }
+ 
+-/****************************************************************************
+- * Global lock array so that private extension between connection and operation 
+- * co-exist
+- *
+- ******************************************************************************/
+-struct ext_lockArray {
+-	PRLock 		**lockArray;
+-	int		 	numlocks;
+-};
+-
+-static struct ext_lockArray extLockArray;
+-
+-/* PKBxxx: make this a configurable. Start with 2 * maxThreads */
+-#define ACLEXT_MAX_LOCKS 40
+-
+-int
+-aclext_alloc_lockarray ( )
+-{
+-
+-	int		i;
+-	PRLock	*lock;
+-
+-	extLockArray.lockArray = 
+-			(PRLock **) slapi_ch_calloc ( ACLEXT_MAX_LOCKS, sizeof ( PRLock *) );
+-
+-	for ( i =0; i < ACLEXT_MAX_LOCKS; i++) {
+-		if (NULL == (lock = PR_NewLock()) ) {
+-			slapi_log_error( SLAPI_LOG_FATAL, plugin_name, 
+-			   "Unable to allocate locks used for private extension\n");
+-			return 1;
+-		}
+-		extLockArray.lockArray[i] = lock;
+-	}
+-	extLockArray.numlocks = ACLEXT_MAX_LOCKS;
+-	return 0;
+-}
+-static PRUint32 slot_id =0;
+-static PRLock *
+-aclext_get_lock ()
+-{
+-
+-	PRUint16 slot = slot_id % ACLEXT_MAX_LOCKS;
+-	slot_id++;
+-	return ( extLockArray.lockArray[slot] );
+-
+-}
+ /****************************************************************************/
+ /* CONNECTION EXTENSION SPECIFIC											*/
+ /****************************************************************************/
+@@ -190,9 +143,9 @@ acl_conn_ext_constructor ( void *object, void *parent )
+ 	struct acl_cblock *ext = NULL;
+ 
+ 	ext = (struct acl_cblock * ) slapi_ch_calloc (1, sizeof (struct acl_cblock ) );
+-	if (( ext->aclcb_lock = aclext_get_lock () ) == NULL ) {
++    if ((ext->aclcb_lock = PR_NewLock()) == NULL) {
+  		slapi_log_error( SLAPI_LOG_FATAL, plugin_name,
+-              		"Unable to get Read/Write lock for CONNECTION extension\n");
++              		"acl_conn_ext_constructor - Unable to get Read/Write lock for CONNECTION extension\n");
+ 		slapi_ch_free ( (void **) &ext );
+ 		return NULL;
+ 	}
+@@ -224,6 +177,7 @@ acl_conn_ext_destructor ( void *ext, void *object, void *parent )
+ 	slapi_ch_free ( (void **) &aclcb );
+ 
+ 	PR_Unlock ( shared_lock );
++    PR_DestroyLock(shared_lock);
+ }
+ 
+ /****************************************************************************/
+diff --git a/ldap/servers/plugins/acl/acleffectiverights.c b/ldap/servers/plugins/acl/acleffectiverights.c
+index 53e4755fd..8562ca8a7 100644
+--- a/ldap/servers/plugins/acl/acleffectiverights.c
++++ b/ldap/servers/plugins/acl/acleffectiverights.c
+@@ -282,6 +282,39 @@ _ger_parse_control (
+ 	return LDAP_SUCCESS;
+ }
+ 
++static void
++_ger_swap_aclcb(struct acl_cblock *cb_1, struct acl_cblock *cb_2)
++{
++    short swap_aclcb_aclsignature;
++    short swap_aclcb_state;
++    Slapi_DN *swap_aclcb_sdn;
++    aclEvalContext swap_aclcb_eval_context;
++
++    /* swap the data of two acl cblocks
++     * while holding th elock of one of them. This allows
++     * to temporarily use different content in the cblock
++     * without freeing data that might be accessed by another thread
++     * Since the lock in one cblock is used to give exclusive access
++     * the locks will not be swapped
++     */
++    swap_aclcb_aclsignature = cb_1->aclcb_aclsignature;
++    swap_aclcb_state = cb_1->aclcb_state;
++    swap_aclcb_sdn = cb_1->aclcb_sdn;
++    swap_aclcb_eval_context = cb_1->aclcb_eval_context;
++
++    cb_1->aclcb_aclsignature = cb_2->aclcb_aclsignature;
++    cb_1->aclcb_state = cb_2->aclcb_state;
++    cb_1->aclcb_sdn = cb_2->aclcb_sdn;
++    cb_1->aclcb_eval_context = cb_2->aclcb_eval_context;
++
++
++    cb_2->aclcb_aclsignature = swap_aclcb_aclsignature;
++    cb_2->aclcb_state = swap_aclcb_state;
++    cb_2->aclcb_sdn = swap_aclcb_sdn;
++    cb_2->aclcb_eval_context = swap_aclcb_eval_context;
++
++}
++
+ static void
+ _ger_release_gerpb (
+ 	Slapi_PBlock **gerpb,
+@@ -302,10 +335,12 @@ _ger_release_gerpb (
+ 		slapi_pblock_get ( pb, SLAPI_CONNECTION, &conn );
+ 		if (conn)
+ 		{
+-			struct aclcb *geraclcb;
+-			geraclcb = (struct aclcb *) acl_get_ext ( ACL_EXT_CONNECTION, conn );
+-			acl_conn_ext_destructor ( geraclcb, NULL, NULL );
+-			acl_set_ext ( ACL_EXT_CONNECTION, conn, *aclcb );
++            struct acl_cblock *geraclcb;
++            geraclcb = (struct acl_cblock *)acl_get_ext(ACL_EXT_CONNECTION, conn);
++            PR_Lock(geraclcb->aclcb_lock);
++            _ger_swap_aclcb(geraclcb, (struct acl_cblock *)*aclcb);
++            acl_conn_ext_destructor((struct acl_cblock *)*aclcb, NULL, NULL);
++            PR_Unlock(geraclcb->aclcb_lock);
+ 			*aclcb = NULL;
+ 		}
+ 	}
+@@ -317,17 +352,18 @@ _ger_new_gerpb (
+ 	Slapi_Entry	    *e,
+ 	const char 		*subjectndn,
+ 	Slapi_PBlock	**gerpb,
+-	void			**aclcb,	/* original aclcb */
++    void **save_aclcb, /* original aclcb */
+ 	char			**errbuf
+ 	)
+ {
+ 	Connection *conn;
+-	struct acl_cblock *geraclcb;
++    struct acl_cblock *ger_aclcb;
++    struct acl_cblock *conn_aclcb;
+ 	Acl_PBlock *geraclpb;
+ 	Operation *gerop;
+ 	int rc = LDAP_SUCCESS;
+ 
+-	*aclcb = NULL;
++    *save_aclcb = NULL;
+ 	*gerpb = slapi_pblock_new ();
+ 	if ( *gerpb == NULL )
+ 	{
+@@ -353,15 +389,18 @@ _ger_new_gerpb (
+ 		slapi_pblock_set ( *gerpb, SLAPI_CONNECTION, conn );
+ 
+ 		/* Can't share the conn->aclcb because of different context */
+-		geraclcb = (struct acl_cblock *) acl_conn_ext_constructor ( NULL, NULL);
+-		if ( geraclcb == NULL )
++        ger_aclcb = (struct acl_cblock *)acl_conn_ext_constructor(NULL, NULL);
++        if (ger_aclcb == NULL)
+ 		{
+ 			rc = LDAP_NO_MEMORY;
+ 			goto bailout;
+ 		}
+-		slapi_sdn_set_ndn_byval ( geraclcb->aclcb_sdn, subjectndn );
+-		*aclcb = acl_get_ext ( ACL_EXT_CONNECTION, conn );
+-		acl_set_ext ( ACL_EXT_CONNECTION, conn, (void *) geraclcb );
++        slapi_sdn_set_ndn_byval(ger_aclcb->aclcb_sdn, subjectndn);
++        conn_aclcb = acl_get_ext(ACL_EXT_CONNECTION, conn);
++        PR_Lock(conn_aclcb->aclcb_lock);
++        _ger_swap_aclcb(conn_aclcb, ger_aclcb);
++        *save_aclcb = ger_aclcb;
++        PR_Unlock(conn_aclcb->aclcb_lock);
+ 	}
+ 
+ 	{
+@@ -387,7 +426,7 @@ _ger_new_gerpb (
+ bailout:
+ 	if ( rc != LDAP_SUCCESS )
+ 	{
+-		_ger_release_gerpb ( gerpb, aclcb, pb );
++        _ger_release_gerpb(gerpb, save_aclcb, pb);
+ 	}
+ 
+ 	return rc;
+diff --git a/ldap/servers/plugins/acl/aclinit.c b/ldap/servers/plugins/acl/aclinit.c
+index 962807531..4d5371a13 100644
+--- a/ldap/servers/plugins/acl/aclinit.c
++++ b/ldap/servers/plugins/acl/aclinit.c
+@@ -119,13 +119,6 @@ aclinit_main()
+ 		return 1;
+ 	} */
+ 
+-	/* create the mutex array */
+-	if ( 0 != aclext_alloc_lockarray ( ) ) {
+-		slapi_log_error ( SLAPI_LOG_FATAL, plugin_name,
+-			"Unable to create the mutext array\n");
+-		return 1;
+-	}
+-
+     /* Allocate the pool */
+ 	if ( 0 != acl_create_aclpb_pool () ) {
+ 		slapi_log_error ( SLAPI_LOG_FATAL, plugin_name,
+-- 
+2.17.1
+
