@@ -22,7 +22,7 @@
 Summary:          389 Directory Server (base)
 Name:             389-ds-base
 Version:          1.2.11.15
-Release:          %{?relprefix}91%{?prerel}%{?dist}
+Release:          %{?relprefix}94%{?prerel}%{?dist}
 License:          GPLv2 with exceptions
 URL:              http://www.port389.org/
 Group:            System Environment/Daemons
@@ -537,6 +537,9 @@ Patch429:         0429-Ticket-49104-dbscan-bin-crashing-due-to-a-segmentati.patc
 Patch430:         0430-Ticket-49121-ns-slapd-crashes-in-ldif_sput-due-to-th.patch
 Patch431:         0431-Ticket-47757-Unable-to-dereference-unqiemember-attri.patch
 Patch432:         0432-fix-for-cve-2017-2668-simple-return-text-if-suffix-n.patch
+Patch433:         0433-Ticket-49545-final-substring-extended-filter-search-.patch
+Patch434:         0434-Ticket-49471-heap-buffer-overflow-in-ss_unescape.patch
+Patch435:         0435-Bug-1525628-CVE-2017-15135-Authentication-bypass-due.patch
 
 %description
 389 Directory Server is an LDAPv3 compliant server.  The base package includes
@@ -1016,6 +1019,9 @@ cp %{SOURCE1} README.devel
 %patch430 -p1
 %patch431 -p1
 %patch432 -p1
+%patch433 -p1
+%patch434 -p1
+%patch435 -p1
 
 %build
 %if %{use_openldap}
@@ -1157,7 +1163,20 @@ fi
 %{_libdir}/%{pkgname}/libslapd.so.*
 
 %changelog
-* Mon Apr 3 2017 Mark Reynolds <mreynolds@redhat.com> - 1.2.1.11.15-91
+* Mon Feb 26 2018 Mark Reynolds <mreynolds@redhat.com> - 1.2.11-15-94
+- Release 1.2.11.15-94
+- Resolves: Bug 1544415 - CVE-2017-15135 389-ds-base: Authentication bypass due to lack of size check in slapi_ct_memcmp function in ch_malloc.c (fix cherry-pick error)
+
+* Mon Feb 26 2018 Mark Reynolds <mreynolds@redhat.com> - 1.2.11-15-93
+- Release 1.2.11.15-93
+- Resolves: Bug 1544415 - CVE-2017-15135 389-ds-base: Authentication bypass due to lack of size check in slapi_ct_memcmp function in ch_malloc.c
+- Resolves: Bug 1543798 - EMBARGOED CVE-2018-1054 389-ds-base: remote Denial of Service (DoS) via search filters in SetUnicodeStringFromUTF_8 in collate.c
+
+* Fri Feb 23 2018 Mark Reynolds <mreynolds@redhat.com> - 1.2.11-15-92
+- Release 1.2.11.15-92
+- Resolves: Bug 1543798 - EMBARGOED CVE-2018-1054 389-ds-base: remote Denial of Service (DoS) via search filters in SetUnicodeStringFromUTF_8 in collate.c
+
+* Mon Apr 3 2017 Mark Reynolds <mreynolds@redhat.com> - 1.2.11.15-91
 - Release 1.2.11.15-91
 - Resolves: bug 1437777 - EMBARGOED CVE-2017-2668 389-ds-base: Remote crash via crafted LDAP messages
 
